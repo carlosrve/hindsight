@@ -278,6 +278,17 @@ describe("environment fallback", () => {
     expect(cfg.apiToken).toBe("tok-from-file");
   });
 
+  it("autoInject: explicit mode wins, legacy autoReflect=false maps to none, junk falls back", () => {
+    expect(resolveConfig({}).autoInject).toBe("reflect");
+    expect(resolveConfig({ autoInject: "pages" }).autoInject).toBe("pages");
+    expect(resolveConfig({ autoInject: "recall", autoReflect: false }).autoInject).toBe("recall");
+    expect(resolveConfig({ autoReflect: false }).autoInject).toBe("none");
+    expect(resolveConfig({ autoInject: "bogus" as never }).autoInject).toBe("reflect");
+    const base = resolveConfig({ autoInject: "pages", banks: { b: { autoReflect: false } } });
+    expect(applyBankConfig(base, "b").cfg.autoInject).toBe("none");
+    expect(applyBankConfig(base, "other").cfg.autoInject).toBe("pages");
+  });
+
   it("parses booleans and numbers rather than passing strings through", () => {
     writeJson(globalCfg, {});
     process.env.HINDSIGHT_AUTO_REFLECT = "false";
@@ -285,7 +296,7 @@ describe("environment fallback", () => {
     process.env.HINDSIGHT_DISABLED = "1";
     process.env.HINDSIGHT_SEED_LIMIT = "5";
     const cfg = loadConfig({ path: globalCfg });
-    expect(cfg.autoReflect).toBe(false);
+    expect(cfg.autoInject).toBe("none");
     expect(cfg.manageBankConfig).toBe(false);
     expect(cfg.disabled).toBe(true);
     expect(cfg.seedLimit).toBe(5);
