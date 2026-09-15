@@ -111,8 +111,8 @@ export interface RawConfig {
    *    "recall"  — the bank's consolidated observations recalled for the prompt (no LLM)
    *    "none"    — nothing; the tool guide routes new goals through pages before optional reflection */
   autoInject?: AutoInject;
-  /** Legacy switch superseded by `autoInject`: false = `autoInject: "none"`. Ignored when
-   *  `autoInject` is set. */
+  /** @deprecated Use `autoInject`. Still honoured: false = `autoInject: "none"`, true = "reflect";
+   *  ignored when `autoInject` is set. Setting it logs a deprecation warning. */
   autoReflect?: boolean;
   pageRefreshEveryTurns?: number; // knowledge-page refresh cadence in user turns (default 10)
   /** What it COSTS to keep this project's knowledge pages current — the trigger stamped on every
@@ -340,8 +340,12 @@ function resolveObservationScopes(raw: RawConfig["observationScopes"]): Observat
 export type AutoInject = "reflect" | "pages" | "recall" | "none";
 const AUTO_INJECT_MODES: readonly AutoInject[] = ["reflect", "pages", "recall", "none"];
 
-/** `autoInject` wins; otherwise the legacy `autoReflect: false` means "none". */
+/** `autoInject` wins; otherwise the deprecated `autoReflect: false` means "none". */
 function resolveAutoInject(raw: RawConfig): AutoInject {
+  if (raw.autoReflect !== undefined) {
+    const replacement = raw.autoReflect === false ? "none" : "reflect";
+    log.warn("config", `autoReflect is deprecated — use autoInject: "${replacement}" instead`);
+  }
   if (AUTO_INJECT_MODES.includes(raw.autoInject as AutoInject)) return raw.autoInject as AutoInject;
   return raw.autoReflect === false ? "none" : "reflect";
 }

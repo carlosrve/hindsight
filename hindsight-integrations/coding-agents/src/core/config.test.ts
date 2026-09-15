@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig, applyBankConfig, readEnvConfig, resolveConfig } from "./config";
+import { log } from "./log";
 
 let root: string;
 let globalCfg: string;
@@ -287,6 +288,20 @@ describe("environment fallback", () => {
     const base = resolveConfig({ autoInject: "pages", banks: { b: { autoReflect: false } } });
     expect(applyBankConfig(base, "b").cfg.autoInject).toBe("none");
     expect(applyBankConfig(base, "other").cfg.autoInject).toBe("pages");
+  });
+
+  it("autoReflect is deprecated: still honoured, but warns only when set", () => {
+    // log.warn writes to the plugin log file, not the console — spy on it directly.
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+    expect(resolveConfig({ autoInject: "pages" }).autoInject).toBe("pages");
+    expect(warn).not.toHaveBeenCalled();
+    expect(resolveConfig({ autoReflect: true }).autoInject).toBe("reflect");
+    expect(resolveConfig({ autoReflect: false }).autoInject).toBe("none");
+    expect(warn).toHaveBeenLastCalledWith(
+      "config",
+      'autoReflect is deprecated — use autoInject: "none" instead'
+    );
+    warn.mockRestore();
   });
 
   it("parses booleans and numbers rather than passing strings through", () => {
