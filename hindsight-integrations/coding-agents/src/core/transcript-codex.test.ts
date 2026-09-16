@@ -253,6 +253,20 @@ describe("readCodexTranscript", () => {
     ]);
   });
 
+  it("omits a non-string timestamp rather than passing it through", () => {
+    // A rollout line is unvalidated JSON. An envelope time that is not a string must not
+    // reach the turn: chat.ts writes whatever is there verbatim into the retained JSONL.
+    writeFileSync(
+      file,
+      JSON.stringify({
+        type: "response_item",
+        timestamp: 1767348000000,
+        payload: { type: "message", role: "assistant", content: [text("done")] },
+      })
+    );
+    expect(readCodexTranscript(file)).toEqual([{ role: "assistant", content: "done" }]);
+  });
+
   it("drops function_call_output entirely — even a huge one produces no turn", () => {
     writeFileSync(
       file,

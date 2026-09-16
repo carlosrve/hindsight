@@ -46,8 +46,20 @@ interface Payload {
 }
 interface RolloutLine {
   type?: string;
-  timestamp?: string;
+  // Unvalidated: the line is a cast from JSON.parse, so the guard in stampOf is what makes
+  // this a string by the time it reaches a turn.
+  timestamp?: unknown;
   payload?: Payload;
+}
+
+/** The rollout envelope's event time, kept so a historical backfill retains when the event
+ *  actually occurred rather than when it was ingested. Guarded like the Claude/qwen/droid
+ *  readers (and factored out like transcript-dsh's stampOf): a rollout line is unvalidated
+ *  JSON, so a non-string timestamp must never reach TransportTurn — it would be written
+ *  verbatim into the retained JSONL by chat.ts. Absent/invalid → omitted, which is the
+ *  pre-existing behaviour for older rollouts that carry no timestamp at all. */
+function stampOf(line: RolloutLine): { timestamp?: string } {
+  return typeof line.timestamp === "string" && line.timestamp ? { timestamp: line.timestamp } : {};
 }
 
 /** Fallback for rollouts without UserMessage events: Codex records its startup instructions
@@ -91,17 +103,13 @@ export function readCodexTranscript(path: string): TransportTurn[] {
   const userFromEvents = lines.some(isUserMessageEvent);
 
   const turns: TransportTurn[] = [];
-  // Keep the envelope time so historical backfills retain when the event occurred,
-  // rather than when it was ingested.
-  const push = (role: string, raw: string, timestamp?: string) => {
+  const push = (role: string, raw: string, stamp: { timestamp?: string } = {}) => {
     const text = stripInjectedMemory(raw).trim();
-    if (text) {
-      turns.push({ role, content: text, ...(timestamp ? { timestamp } : {}) });
-    }
+    if (text) turns.push({ role, content: text, ...stamp });
   };
   for (const line of lines) {
     if (isUserMessageEvent(line)) {
-      push("user", contentText(line.payload?.item?.content), line.timestamp);
+      push("user", contentText(line.payload?.item?.content), stampOf(line));
       continue;
     }
     if (line.type !== "response_item") continue;
@@ -110,10 +118,10 @@ export function readCodexTranscript(path: string): TransportTurn[] {
 
     if (p.type === "message") {
       // `developer` messages are Codex's system prompt + OUR injected hook context → drop entirely.
-      if (p.role === "assistant") push("assistant", contentText(p.content), line.timestamp);
+      if (p.role === "assistant") push("assistant", contentText(p.content), stampOf(line));
       else if (p.role === "user" && !userFromEvents) {
         const text = contentText(p.content);
-        if (!isSyntheticUserText(stripInjectedMemory(text))) push("user", text, line.timestamp);
+        if (!isSyntheticUserText(stripInjectedMemory(text))) push("user", text, stampOf(line));
       }
     } else if (p.type === "function_call" && typeof p.name === "string") {
       let input: unknown;
@@ -122,11 +130,7 @@ export function readCodexTranscript(path: string): TransportTurn[] {
       } catch {
         input = undefined;
       }
-      turns.push({
-        role: "action",
-        content: actionLine(p.name, input),
-        ...(line.timestamp ? { timestamp: line.timestamp } : {}),
-      });
+      turns.push({ role: "action", content: actionLine(p.name, input), ...stampOf(line) });
     }
     // reasoning / other payloads: dropped.
   }
