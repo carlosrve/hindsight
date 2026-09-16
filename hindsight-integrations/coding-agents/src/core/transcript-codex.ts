@@ -46,6 +46,7 @@ interface Payload {
 }
 interface RolloutLine {
   type?: string;
+  timestamp?: string;
   payload?: Payload;
 }
 
@@ -90,13 +91,17 @@ export function readCodexTranscript(path: string): TransportTurn[] {
   const userFromEvents = lines.some(isUserMessageEvent);
 
   const turns: TransportTurn[] = [];
-  const push = (role: string, raw: string) => {
+  // Keep the envelope time so historical backfills retain when the event occurred,
+  // rather than when it was ingested.
+  const push = (role: string, raw: string, timestamp?: string) => {
     const text = stripInjectedMemory(raw).trim();
-    if (text) turns.push({ role, content: text });
+    if (text) {
+      turns.push({ role, content: text, ...(timestamp ? { timestamp } : {}) });
+    }
   };
   for (const line of lines) {
     if (isUserMessageEvent(line)) {
-      push("user", contentText(line.payload?.item?.content));
+      push("user", contentText(line.payload?.item?.content), line.timestamp);
       continue;
     }
     if (line.type !== "response_item") continue;
@@ -105,10 +110,10 @@ export function readCodexTranscript(path: string): TransportTurn[] {
 
     if (p.type === "message") {
       // `developer` messages are Codex's system prompt + OUR injected hook context → drop entirely.
-      if (p.role === "assistant") push("assistant", contentText(p.content));
+      if (p.role === "assistant") push("assistant", contentText(p.content), line.timestamp);
       else if (p.role === "user" && !userFromEvents) {
         const text = contentText(p.content);
-        if (!isSyntheticUserText(stripInjectedMemory(text))) push("user", text);
+        if (!isSyntheticUserText(stripInjectedMemory(text))) push("user", text, line.timestamp);
       }
     } else if (p.type === "function_call" && typeof p.name === "string") {
       let input: unknown;
@@ -117,7 +122,11 @@ export function readCodexTranscript(path: string): TransportTurn[] {
       } catch {
         input = undefined;
       }
-      turns.push({ role: "action", content: actionLine(p.name, input) });
+      turns.push({
+        role: "action",
+        content: actionLine(p.name, input),
+        ...(line.timestamp ? { timestamp: line.timestamp } : {}),
+      });
     }
     // reasoning / other payloads: dropped.
   }
