@@ -25,9 +25,10 @@ def test_sync_turn_retains_the_turn(provider):
     assert len(fake.retains) == 1
     call = fake.retains[0]
     assert call["bank_id"] == "team"
-    assert call["document_id"] == "session-1"  # stable id + append on a capable API
+    assert "document_id" not in call
+    assert all(item["document_id"].startswith("session-1:message:") for item in call["items"])
     item = _retain_item(fake)
-    assert item["update_mode"] == "append"
+    assert "update_mode" not in item
     assert "hermes" in item["tags"] and "session:session-1" in item["tags"]
     messages = [json.loads(event["content"])["message"] for event in call["items"]]
     assert [m["content"] for m in messages] == ["User: what is my name?", "Assistant: Ada."]
@@ -125,7 +126,9 @@ def test_session_switch_starts_a_new_document(provider):
     # mode the buffer is already empty here (sync_turn shipped and dropped the turn),
     # so there is nothing left to flush — previously this re-shipped the retained
     # turn under session-1 a second time, duplicating it in the document.
-    assert [call["document_id"] for call in fake.retains] == ["session-1", "session-2"]
+    assert len(fake.retains) == 2
+    for call, session in zip(fake.retains, ["session-1", "session-2"]):
+        assert all(item["document_id"].startswith(f"{session}:message:") for item in call["items"])
 
 
 def test_register_exposes_the_provider_to_hermes():

@@ -76,7 +76,14 @@ def test_buffered_snapshots_keep_event_times_after_delayed_writer(provider, monk
     ]
     assert "must not enter" not in json.dumps(items)
     assert "User: one" not in items[1]["context"]
-    assert fake.retains[0]["document_id"] == "session-1"
+    assert "document_id" not in fake.retains[0]
+    assert fake.retains[0]["retain_async"] is True
+    assert len({item["document_id"] for item in items}) == len(items)
+    assert all(item["document_id"].startswith("session-1:message:") for item in items)
+    assert all("update_mode" not in item for item in items)
+    first_ids = [item["document_id"] for item in items]
+    queued[0]()
+    assert [item["document_id"] for item in fake.retains[1]["items"]] == first_ids
     instance.shutdown()
 
 

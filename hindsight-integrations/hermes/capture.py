@@ -6,6 +6,7 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from hashlib import sha256
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
@@ -36,6 +37,15 @@ class FocusedTurnContent:
 @dataclass(frozen=True)
 class CapturedTurn:
     messages: tuple[CapturedMessage, ...]
+
+    def message_document_id(self, session_document_id: str, message: CapturedMessage) -> str:
+        """Immutable completed messages have stable IDs across batch replay and session resume.
+
+        Include the source instant and role as well as text: identical replies on
+        different dates are distinct events. Never append different clocks to one document.
+        """
+        digest = sha256(json.dumps(asdict(message), sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        return f"{session_document_id}:message:{digest}"
 
     def focused_content(self, message: CapturedMessage) -> str:
         """Keep dialogue context inside content so memory defense screens it too."""

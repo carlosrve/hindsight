@@ -49,7 +49,9 @@ def test_real_host_delivers_detached_snapshot(tmp_path):
         writer_jobs[0]()
         assert len(calls) == 1
         items, kwargs = calls[0]
-        assert kwargs['document_id'] == 'session'
+        assert 'document_id' not in kwargs
+        assert len({item['document_id'] for item in items}) == len(items)
+        assert all(item['document_id'].startswith('session:message:') for item in items)
         assert [item['timestamp'] for item in items] == [
             '2025-01-02T10:00:00Z', '2025-01-02T10:00:10Z']
         assert [json.loads(item['content'])['message']['content'] for item in items] == ['User: q', 'Assistant: a']

@@ -1395,7 +1395,7 @@ class HindsightMemoryProvider(MemoryProvider):
         retain_async: bool | None = None,
     ) -> Any:
         """Dispatch items via aretain_batch (bank_id/document_id/retain_async are
-        call-level args, never item keys)."""
+        call-level args; item document_id overrides the shared fallback)."""
         kwargs: Dict[str, Any] = {
             "bank_id": bank_id,
             "items": items,
@@ -1414,34 +1414,43 @@ class HindsightMemoryProvider(MemoryProvider):
         label: str,
         track_ops: bool = True,
     ) -> Callable[[], None]:
-        """Writer job shipping *turns* as one document. Inputs are snapshotted NOW: the
+        """Writer job shipping *turns* as dated message documents. Inputs are snapshotted NOW: the
         writer runs after later sync_turn() calls mutate _session_turns/_turn_index/_session_id."""
         metadata = self._build_metadata(message_count=len(turns) * 2, turn_index=self._turn_index)
+        metadata["session_document_id"] = document_id
         lineage = (("session", self._session_id), ("parent", self._parent_session_id))
         tags = [f"{kind}:{sid}" for kind, sid in lineage if sid] or None
         bank_id, retain_async, retain_context = self._bank_id, self._retain_async, self._retain_context
 
-        # The API timestamp controls relative-date extraction. One item per
-        # message keeps buffered turns on their own clocks, while document_id
-        # groups them into the session. Build items before the writer handoff.
+        # Async batches reject repeated document IDs. Separate immutable message
+        # documents also prevent append's original document clock dating a later
+        # message. Session metadata/tags preserve lineage; freeze IDs and bytes now.
         items = [
-            self._build_retain_kwargs(
-                turn.focused_content(message),
-                context=(
-                    f"{retain_context}. Content has a target message and context_messages. "
-                    "Extract only what the target message asserts or proposes. Context_messages are background "
-                    "used to resolve subjects and references, not independent memories to extract. "
-                    "Resolve relative dates using the target message timestamp, which is the item's timestamp. "
-                    "Do not promote a proposal into an execution or a user preference."
+            dict(
+                self._build_retain_kwargs(
+                    turn.focused_content(message),
+                    context=(
+                        f"{retain_context}. Content has a target message and context_messages. "
+                        "Extract only what the target message asserts or proposes. Context_messages are background "
+                        "used to resolve subjects and references, not independent memories to extract. "
+                        "The item timestamp is the target message's source clock. Resolve relative dates using "
+                        "the dated dialogue and its workday context; do not impose a civil-midnight rollover. "
+                        "If intent is ambiguous, preserve that uncertainty rather than inventing a date. "
+                        "Do not promote a proposal into an execution or a user preference."
+                    ),
+                    metadata=metadata,
+                    tags=tags,
+                    occurred_at=message.timestamp,
                 ),
-                metadata=metadata,
-                tags=tags,
-                occurred_at=message.timestamp,
-                update_mode=update_mode,
+                document_id=turn.message_document_id(document_id, message),
             )
             for turn in turns
             for message in turn.messages
         ]
+
+        # A copied snapshot may repeat the same immutable event. Submit its
+        # latest dated context once, rather than failing the entire async batch.
+        items = list({item["document_id"]: item for item in items}.values())
 
         def _job() -> None:
             logger.debug(
@@ -1454,7 +1463,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 sum(len(item["content"]) for item in items),
                 len(turns),
             )
-            resp = self._retain_items(items, bank_id=bank_id, document_id=document_id, retain_async=retain_async)
+            resp = self._retain_items(items, bank_id=bank_id, retain_async=retain_async)
             # Async retains are only *accepted* here; track the op id(s) so the
             # next-turn prefetch can wait for true server-side completion.
             if retain_async and track_ops:
