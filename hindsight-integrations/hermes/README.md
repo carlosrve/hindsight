@@ -387,6 +387,26 @@ relative dates follow conversational intent, including an overnight workday, rat
 than a mandatory midnight rollover. Each message is an extraction unit, so this
 trades more extraction work for accurate temporal provenance.
 
+### Automatic retain delivery
+
+Automatic retains are staged to a profile-local outbox before the writer is queued.
+Records remain after a failed submission and replay in order before later submissions
+or when a new provider starts with the same profile, endpoint, credential identity and bank. Dates,
+content and operation IDs are frozen. Async replay uses the server's operation
+idempotency; synchronous mode remains at least once. A successful API acceptance
+removes the local record; this is not monitoring of later server-side extraction
+failures. Explicit retain tools are unchanged. Shutdown also stages a partial batch
+below the configured cadence.
+
+Outbox records contain raw conversation content until the API's memory defense
+screens it. They live under `$HERMES_HOME/hindsight/retain-outbox/<scope>/` in an
+directory and files with owner-only POSIX permissions. Profile storage must therefore be
+protected like the session database. No credentials are stored in the envelope.
+Malformed records or a persistent API error are kept and logged rather than skipped.
+If a bank, endpoint or credential identity changes, its previous scope is retained for explicit recovery
+instead of being forwarded to the new destination. There is no unconditional
+background retry loop or automatic deletion/expiry of unsent records.
+
 ## Development
 
 ### Releasing

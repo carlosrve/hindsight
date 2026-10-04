@@ -53,6 +53,7 @@ from .embedded import (
     _start_daemon,
     _stop_daemon,
 )
+from .retain_outbox import RetainEnvelope, RetainItem, RetainOutbox
 from .settings import (
     _DEFAULT_API_URL,
     _DEFAULT_IDLE_TIMEOUT,
@@ -1020,6 +1021,15 @@ class HindsightMemoryProvider(MemoryProvider):
         self._apply_connection_settings(cfg)
         self._apply_retain_settings(cfg)
         self._apply_recall_settings(cfg)
+        self._retain_outbox = RetainOutbox(
+            get_hermes_home(),
+            mode=self._mode,
+            api_url=self._api_url,
+            bank_id=self._bank_id,
+            auth_identity=self._api_key,
+        )
+        if self._automatic_outbox().pending():
+            self._enqueue_retain(self._deliver_automatic_retains)
 
         client_version = "unknown"
         with contextlib.suppress(Exception):
@@ -1381,6 +1391,36 @@ class HindsightMemoryProvider(MemoryProvider):
         item.update({k: v for k, v in (("tags", merged_tags), ("observation_scopes", self._observation_scopes)) if v})
         return item
 
+    def _automatic_outbox(self) -> RetainOutbox:
+        if not hasattr(self, "_retain_outbox"):
+            self._retain_outbox = RetainOutbox(
+                get_hermes_home(),
+                mode=self._mode,
+                api_url=self._api_url,
+                bank_id=self._bank_id,
+                auth_identity=self._api_key,
+            )
+        return self._retain_outbox
+
+    def _deliver_automatic_retains(self, outbox: RetainOutbox | None = None) -> None:
+        def send(envelope: RetainEnvelope) -> None:
+            response = self._retain_items(
+                [item.model_dump(mode="json", exclude_none=True) for item in envelope.items],
+                bank_id=envelope.bank_id,
+                document_id=envelope.document_id,
+                retain_async=envelope.retain_async,
+                operation_id=envelope.operation_id,
+            )
+            if envelope.retain_async and envelope.track_ops:
+                self._track_retain_ops(response, envelope.bank_id)
+
+        current = self._automatic_outbox()
+        if outbox is not None and outbox.path != current.path:
+            raise RuntimeError(
+                "Pending automatic retain belongs to a different endpoint/bank; kept for its original scope"
+            )
+        (outbox or current).drain(send)
+
     def _retain_batch(
         self, item: dict, *, bank_id: str, document_id: str | None = None, retain_async: bool | None = None
     ) -> Any:
@@ -1393,14 +1433,15 @@ class HindsightMemoryProvider(MemoryProvider):
         bank_id: str,
         document_id: str | None = None,
         retain_async: bool | None = None,
+        operation_id: str | None = None,
     ) -> Any:
-        """Dispatch items via aretain_batch (bank_id/document_id/retain_async are
-        call-level args; item document_id overrides the shared fallback)."""
+        """Keep the same frozen SDK item list and operation identity on replay."""
         kwargs: Dict[str, Any] = {
             "bank_id": bank_id,
             "items": items,
             "document_id": document_id,
             "retain_async": retain_async,
+            "operation_id": operation_id,
         }
         kwargs = {k: v for k, v in kwargs.items() if v is not None}
         return self._run_hindsight_operation(lambda client: client.aretain_batch(**kwargs))
@@ -1452,6 +1493,12 @@ class HindsightMemoryProvider(MemoryProvider):
         # latest dated context once, rather than failing the entire async batch.
         items = list({item["document_id"]: item for item in items}.values())
 
+        outbox = self._automatic_outbox()
+        outbox.stage(RetainEnvelope(
+            bank_id=bank_id, retain_async=retain_async,
+            items=[RetainItem.model_validate(item) for item in items], track_ops=track_ops,
+        ))
+
         def _job() -> None:
             logger.debug(
                 "Hindsight %s: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
@@ -1463,11 +1510,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 sum(len(item["content"]) for item in items),
                 len(turns),
             )
-            resp = self._retain_items(items, bank_id=bank_id, retain_async=retain_async)
-            # Async retains are only *accepted* here; track the op id(s) so the
-            # next-turn prefetch can wait for true server-side completion.
-            if retain_async and track_ops:
-                self._track_retain_ops(resp, bank_id)
+            self._deliver_automatic_retains(outbox)
             logger.debug("Hindsight %s succeeded", label)
 
         return _job
@@ -1688,6 +1731,16 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
+        if not self._shutting_down.is_set() and self._session_turns and self._turn_counter % self._retain_every_n_turns:
+            document_id, update_mode = self._resolve_retain_target(self._document_id)
+            start = self._last_retained_turn_count if update_mode == "append" else 0
+            turns = self._session_turns[start:]
+            if turns:
+                self._enqueue_retain(
+                    self._make_turn_retain_job(
+                        turns, document_id=document_id, update_mode=update_mode, label="shutdown retain"
+                    )
+                )
         # Stop accepting retain jobs first so late sync_turn() calls are dropped.
         self._shutting_down.set()
         # The writer finishes in-flight work then exits on the sentinel; the
@@ -1697,7 +1750,7 @@ class HindsightMemoryProvider(MemoryProvider):
             writer.join(timeout=10.0)
             if writer.is_alive():
                 logger.warning(
-                    "Hindsight writer did not stop within 10s; abandoning %d pending retain(s)",
+                    "Hindsight writer did not stop within 10s; staged automatic retains remain in the local outbox (%d queued)",
                     self._retain_queue.qsize(),
                 )
         self._join_prefetch(5.0)
