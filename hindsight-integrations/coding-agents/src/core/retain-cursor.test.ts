@@ -74,6 +74,7 @@ describe("planRetain", () => {
       ...pendingAt(Date.now()),
       items: [
         {
+          documentKey: "test-message",
           message: { role: "assistant", content: "short", timestamp: "2025-01-01T00:00:00Z" },
           context_messages: [
             {
