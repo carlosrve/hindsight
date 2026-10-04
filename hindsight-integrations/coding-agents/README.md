@@ -59,13 +59,17 @@ npx @vectorize-io/hindsight-coding-agents install claude-code
 
 #### <img src="https://hindsight.vectorize.io/img/harness/codex.svg" alt="" width="20" height="20" /> Codex CLI
 
-Codex Stop retains each message with its own extraction timestamp and nearby dated dialogue
-context. This preserves relative dates across midnight without losing the subject of short
-replies. Context text stays inside memory-defense-screened content. Retain still batches
-messages under the session document and keeps append/retry cursors; buffered contextual items
-are replayed unchanged. This increases extraction units compared with one item per session.
-Tool-result capture is unchanged. Already retained history and legacy pending payloads are not
-retroactively reprocessed by this update.
+Codex Stop retains each message with its own source timestamp and nearby dated dialogue
+context. Relative dates follow conversational intent, including overnight workdays;
+the plugin does not force a civil-midnight rollover. Context stays inside
+memory-defense-screened content. Each immutable event uses a stable document ID
+`conversation:<session>:message:<digest>` derived from role, text and source timestamp,
+with session metadata and tags preserving lineage. A changed message is a new event;
+this does not delete historical events when a local transcript is edited or truncated.
+Async batches use distinct item IDs, and retry cursors replay frozen contextual items
+unchanged. This increases extraction units compared with one item per session.
+Tool-result capture and historical bulk import are unchanged. Already retained history
+and legacy pending payloads are not retroactively reprocessed by this update.
 
 ```bash
 npx @vectorize-io/hindsight-coding-agents install codex

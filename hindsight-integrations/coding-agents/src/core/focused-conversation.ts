@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { TransportTurn } from "./chat";
 
 export interface DatedMessage {
@@ -6,13 +7,16 @@ export interface DatedMessage {
   timestamp: string;
 }
 export interface FocusedConversationItem {
+  /** Stable event identity; replay and continuation copies address the same document. */
+  documentKey: string;
   message: DatedMessage;
   context_messages: DatedMessage[];
 }
 export const FOCUSED_CONVERSATION_CONTEXT =
   "Content has a target message and context_messages. Extract only what the target message asserts or proposes. " +
   "Context_messages are background used to resolve subjects and references, not independent memories to extract. " +
-  "Resolve relative dates using the target message timestamp, which is the item's timestamp. " +
+  "The item timestamp is the target message's source clock. Resolve relative dates using the dated dialogue " +
+  "and its workday context; do not impose a civil-midnight rollover. If intent is ambiguous, preserve that uncertainty. " +
   "Do not promote a proposal into an execution or a user preference.";
 
 function sourceTimestamp(value: string | undefined): string | undefined {
@@ -42,7 +46,11 @@ export function focusedConversationItems(
   for (const [index, message] of messages.entries()) {
     const context = message.role === "user" ? assistant : user;
     if (index >= fromTurn)
-      items.push({ message, context_messages: context ? [{ ...context }] : [] });
+      items.push({
+        documentKey: createHash("sha256").update(JSON.stringify(message)).digest("hex"),
+        message,
+        context_messages: context ? [{ ...context }] : [],
+      });
     if (message.role === "user") user = message;
     if (message.role === "assistant") assistant = message;
   }

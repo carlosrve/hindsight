@@ -78,19 +78,29 @@ describe("per-message extraction clocks", () => {
     const body = calls[0].body;
     expect(body.operation_id).toBe("stable-id");
     expect(body.items).toHaveLength(2);
+    expect(new Set(body.items.map((item) => item.document_id)).size).toBe(2);
     expect(body.items.map((item: WireItem) => item.timestamp)).toEqual([
       "2025-05-01T23:59:55.000Z",
       "2025-05-02T00:00:05.000Z",
     ]);
     for (const item of body.items) {
       expect(item.strategy).toBeUndefined();
-      expect(item.document_id).toBe("conversation:test");
-      expect(item.update_mode).toBe("append");
+      expect(item.document_id).toMatch(/^conversation:test:message:[0-9a-f]{64}$/);
+      expect(item.update_mode).toBeUndefined();
       expect(item.observation_scopes).toEqual([["daily"]]);
       expect(item.metadata).toEqual({ harness: "codex" });
       expect(item.context).not.toContain("When for Boreal?");
     }
     expect(JSON.parse(body.items[1].content).context_messages[0].content).toBe("When for Boreal?");
+  });
+  it("reuses event IDs across copied continuation files and separates repeated text on different dates", () => {
+    const original = focusedConversationItems(turns, fallback);
+    const copy = focusedConversationItems(
+      [...turns, { ...turns[1], timestamp: "2025-05-03T00:00:05Z" }],
+      fallback
+    );
+    expect(copy[1].documentKey).toBe(original[1].documentKey);
+    expect(copy[2].documentKey).not.toBe(original[1].documentKey);
   });
   it("replays frozen contextual items and operation id after a rejected append", async () => {
     const retain = vi.fn().mockResolvedValue(undefined);

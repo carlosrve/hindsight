@@ -473,15 +473,24 @@ export class HindsightClient {
     if (opts.metadata) item.metadata = opts.metadata;
     if (opts.updateMode) item.update_mode = opts.updateMode;
     const items = opts.conversationItems?.map((focused) => {
-      const { strategy: _strategy, ...shared } = item;
+      // A separate immutable event document avoids duplicate-ID rejection on the
+      // async API and prevents an append inheriting the first message's clock.
+      const { strategy: _strategy, update_mode: _updateMode, ...shared } = item;
+      const { documentKey, ...content } = focused;
       return {
         ...shared,
-        content: JSON.stringify(focused),
+        document_id: `${documentId}:message:${documentKey}`,
+        content: JSON.stringify(content),
         context: `${context}. ${FOCUSED_CONVERSATION_CONTEXT}`,
         timestamp: focused.message.timestamp,
       };
     }) ?? [item];
-    const body: Record<string, unknown> = { items, async: true };
+    // A continuation may copy an event verbatim; duplicate IDs are invalid
+    // inside one async batch, even when the bytes are identical.
+    const uniqueItems = opts.conversationItems
+      ? [...new Map(items.map((entry) => [entry.document_id, entry])).values()]
+      : items;
+    const body: Record<string, unknown> = { items: uniqueItems, async: true };
     if (opts.operationId) body.operation_id = opts.operationId;
     const r = await this.req("POST", this.bankUrl("/memories"), body);
     try {

@@ -320,7 +320,7 @@ async function writeSession(
   const opId = (mode: string, content: string, items?: FocusedConversationItem[]) =>
     uuidV5(
       items
-        ? `${client.bank}\n${refId}\n${mode}:message-clock-v1\n${content}\n${JSON.stringify(items)}`
+        ? `${client.bank}\n${refId}\n${mode}:message-clock-v2\n${content}\n${JSON.stringify(items)}`
         : `${client.bank}\n${refId}\n${mode}\n${content}`
     );
   const submit = (
