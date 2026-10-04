@@ -279,9 +279,9 @@ Each message is sent as its own retain item, carrying its event time both in the
 content and in the API timestamp. Content identifies a target `message` and dated
 `context_messages` from the same turn. The paired message resolves subjects and
 references; extraction instructions focus on the target and its clock. This keeps
-short replies meaningful without anchoring an assistant's relative dates to the
-user's earlier timestamp. All dialogue remains inside content, where memory defense
-can screen it; API context contains only static extraction instructions. Items share the session document, tags, and scopes.
+short replies meaningful while preserving both source clocks. Relative dates are
+interpreted from dated dialogue and workday intent rather than a strict midnight cutoff. All dialogue remains inside content, where memory defense
+can screen it; API context contains only static extraction instructions. Messages use distinct stable documents, linked by session metadata, tags and scopes.
 Buffering batches the submission without assigning a single date to all messages;
 the writer does not recompute dates. Retention audit metadata stays separate.
 This increases the number of extraction units compared with one item per buffered
