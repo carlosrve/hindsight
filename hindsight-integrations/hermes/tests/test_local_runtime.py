@@ -140,7 +140,7 @@ def test_the_plugin_never_depends_on_hindsight_all_again():
                     assert not banned(alias.name), f"{name}:{node.lineno} imports {alias.name}"
 
 
-def test_the_start_worker_reconciles_the_profile_env_before_the_daemon_boots(monkeypatch, tmp_path):
+def test_the_start_worker_reconciles_the_profile_env_before_the_daemon_boots(hermes_env, monkeypatch, tmp_path):
     """Ordering is load-bearing: the daemon reads the profile .env at boot, so a drifted file must
     be rewritten (and a running daemon stopped) BEFORE the client is built — building it is what
     starts the daemon now. Booting first would pin the stale values for the life of the process.

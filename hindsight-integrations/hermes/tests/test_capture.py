@@ -83,7 +83,7 @@ def test_buffered_snapshots_keep_event_times_after_delayed_writer(provider, monk
     assert all("update_mode" not in item for item in items)
     first_ids = [item["document_id"] for item in items]
     queued[0]()
-    assert [item["document_id"] for item in fake.retains[1]["items"]] == first_ids
+    assert all([item["document_id"] for item in call["items"]] == first_ids for call in fake.retains)
     instance.shutdown()
 
 

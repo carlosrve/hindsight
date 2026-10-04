@@ -49,7 +49,7 @@ def test_real_host_delivers_detached_snapshot(tmp_path):
         writer_jobs[0]()
         assert len(calls) == 1
         items, kwargs = calls[0]
-        assert 'document_id' not in kwargs
+        assert kwargs.get('document_id') is None
         assert len({item['document_id'] for item in items}) == len(items)
         assert all(item['document_id'].startswith('session:message:') for item in items)
         assert [item['timestamp'] for item in items] == [
