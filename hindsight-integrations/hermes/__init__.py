@@ -1020,7 +1020,7 @@ class HindsightMemoryProvider(MemoryProvider):
             mode=self._mode,
             api_url=self._api_url,
             bank_id=self._bank_id,
-            auth_identity=fingerprint_secret_value(self._api_key),
+            auth_identity=self._api_key,
         )
         if self._automatic_outbox().pending():
             self._enqueue_retain(self._deliver_automatic_retains)
@@ -1402,7 +1402,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 mode=self._mode,
                 api_url=self._api_url,
                 bank_id=self._bank_id,
-                auth_identity=fingerprint_secret_value(self._api_key),
+                auth_identity=self._api_key,
             )
         return self._retain_outbox
 
