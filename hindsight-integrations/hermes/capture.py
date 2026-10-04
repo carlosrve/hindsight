@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import math
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -27,8 +28,19 @@ class CapturedMessage:
 
 
 @dataclass(frozen=True)
+class FocusedTurnContent:
+    message: CapturedMessage
+    context_messages: tuple[CapturedMessage, ...]
+
+
+@dataclass(frozen=True)
 class CapturedTurn:
     messages: tuple[CapturedMessage, ...]
+
+    def focused_content(self, message: CapturedMessage) -> str:
+        """Keep dialogue context inside content so memory defense screens it too."""
+        focused = FocusedTurnContent(message, tuple(other for other in self.messages if other is not message))
+        return json.dumps(asdict(focused), ensure_ascii=False)
 
     @property
     def content_size(self) -> int:

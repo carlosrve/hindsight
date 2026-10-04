@@ -52,7 +52,7 @@ def test_real_host_delivers_detached_snapshot(tmp_path):
         assert kwargs['document_id'] == 'session'
         assert [item['timestamp'] for item in items] == [
             '2025-01-02T10:00:00Z', '2025-01-02T10:00:10Z']
-        assert [json.loads(item['content'])[0]['content'] for item in items] == ['User: q', 'Assistant: a']
+        assert [json.loads(item['content'])['message']['content'] for item in items] == ['User: q', 'Assistant: a']
         print('real Hermes snapshot -> provider retain boundary: passed')
     """)
     env = dict(os.environ, HERMES_HOME=str(tmp_path / "home"), HERMES_RUNTIME_DIR=str(tmp_path / "runtime"))

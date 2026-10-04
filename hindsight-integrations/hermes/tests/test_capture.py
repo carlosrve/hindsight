@@ -61,13 +61,21 @@ def test_buffered_snapshots_keep_event_times_after_delayed_writer(provider, monk
         "2025-02-02T10:00:00Z",
         "2025-02-02T10:00:20Z",
     ]
-    assert [json.loads(item["content"])[0]["timestamp"] for item in items] == [item["timestamp"] for item in items]
-    assert [json.loads(item["content"])[0]["content"] for item in items] == [
+    assert [json.loads(item["content"])["message"]["timestamp"] for item in items] == [
+        item["timestamp"] for item in items
+    ]
+    assert [json.loads(item["content"])["message"]["content"] for item in items] == [
         "User: one",
         "Assistant: 1",
         "User: two",
         "Assistant: 2",
     ]
+    focused = json.loads(items[1]["content"])
+    assert focused["context_messages"] == [
+        {"role": "user", "content": "User: one", "timestamp": "2025-01-02T10:00:00Z"}
+    ]
+    assert "must not enter" not in json.dumps(items)
+    assert "User: one" not in items[1]["context"]
     assert fake.retains[0]["document_id"] == "session-1"
     instance.shutdown()
 

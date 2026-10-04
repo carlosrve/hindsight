@@ -269,7 +269,12 @@ Missing, malformed, non-finite, or timezone-less dates use the provider's clock 
 the turn is captured; a timezone is never inferred for an ambiguous source date.
 
 Each message is sent as its own retain item, carrying its event time both in the
-content and in the API timestamp. Items share the session document, tags, and scopes.
+content and in the API timestamp. Content identifies a target `message` and dated
+`context_messages` from the same turn. The paired message resolves subjects and
+references; extraction instructions focus on the target and its clock. This keeps
+short replies meaningful without anchoring an assistant's relative dates to the
+user's earlier timestamp. All dialogue remains inside content, where memory defense
+can screen it; API context contains only static extraction instructions. Items share the session document, tags, and scopes.
 Buffering batches the submission without assigning a single date to all messages;
 the writer does not recompute dates. Retention audit metadata stays separate.
 This increases the number of extraction units compared with one item per buffered

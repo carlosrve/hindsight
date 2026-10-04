@@ -13,7 +13,7 @@ def _retain_item(fake: FakeClient, index: int = 0) -> dict:
 
 def _turns_of(fake: FakeClient, index: int = 0) -> list[list[str]]:
     """Reconstruct user/final-assistant pairs from timestamped message items."""
-    texts = [json.loads(item["content"])[0]["content"] for item in fake.retains[index]["items"]]
+    texts = [json.loads(item["content"])["message"]["content"] for item in fake.retains[index]["items"]]
     return [texts[i : i + 2] for i in range(0, len(texts), 2)]
 
 
@@ -29,7 +29,7 @@ def test_sync_turn_retains_the_turn(provider):
     item = _retain_item(fake)
     assert item["update_mode"] == "append"
     assert "hermes" in item["tags"] and "session:session-1" in item["tags"]
-    messages = [json.loads(event["content"])[0] for event in call["items"]]
+    messages = [json.loads(event["content"])["message"] for event in call["items"]]
     assert [m["content"] for m in messages] == ["User: what is my name?", "Assistant: Ada."]
 
 

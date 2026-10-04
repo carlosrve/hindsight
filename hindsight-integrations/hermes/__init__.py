@@ -1426,11 +1426,14 @@ class HindsightMemoryProvider(MemoryProvider):
         # groups them into the session. Build items before the writer handoff.
         items = [
             self._build_retain_kwargs(
-                json.dumps(
-                    [{"role": message.role, "content": message.content, "timestamp": message.timestamp}],
-                    ensure_ascii=False,
+                turn.focused_content(message),
+                context=(
+                    f"{retain_context}. Content has a target message and context_messages. "
+                    "Extract only what the target message asserts or proposes. Context_messages are background "
+                    "used to resolve subjects and references, not independent memories to extract. "
+                    "Resolve relative dates using the target message timestamp, which is the item's timestamp. "
+                    "Do not promote a proposal into an execution or a user preference."
                 ),
-                context=retain_context,
                 metadata=metadata,
                 tags=tags,
                 occurred_at=message.timestamp,
