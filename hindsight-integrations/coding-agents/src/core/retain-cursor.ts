@@ -38,11 +38,14 @@
  * settled after it, so an overlapping retain (the runtime fires them without awaiting) sees the
  * advanced cursor and does not re-send the same slice.
  */
+import type { FocusedConversationItem } from "./focused-conversation";
 import { createHash } from "node:crypto";
 import type { TransportTurn } from "./chat";
 
 /** One append that was built and submitted but never confirmed. */
 export interface PendingAppend {
+  /** Frozen extraction items; absent on a legacy outbox entry, which replays unchanged. */
+  items?: FocusedConversationItem[];
   /** Its EXACT bytes. Replayed unchanged — different bytes would be a different operation, and the
    *  server's dedupe (which is what makes a replay safe at all) would not apply to them. */
   content: string;
@@ -81,7 +84,12 @@ export function pendingReplayable(cursor: RetainCursor, now: number): boolean {
   const pending = cursor.pending ?? [];
   if (!pending.length) return true;
   if (pending.some((p) => now - p.at > PENDING_MAX_AGE_MS)) return false;
-  return pending.reduce((n, p) => n + p.content.length, 0) <= PENDING_MAX_BYTES;
+  return (
+    pending.reduce(
+      (n, p) => n + p.content.length + (p.items ? JSON.stringify(p.items).length : 0),
+      0
+    ) <= PENDING_MAX_BYTES
+  );
 }
 
 export interface RetainCursor {

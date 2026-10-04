@@ -5,6 +5,7 @@
  * (missions + git/chat retain strategies), retains memories, reflects, drains async operations, and
  * creates knowledge pages. Nothing here knows about opencode/claude-code/etc.
  */
+import { FOCUSED_CONVERSATION_CONTEXT, type FocusedConversationItem } from "./focused-conversation";
 import {
   type BankOverrides,
   buildPageTrigger,
@@ -132,6 +133,8 @@ export interface ClientOpts {
 }
 
 export interface RetainOpts {
+  /** Per-message extraction clocks with dated dialogue context, captured before queueing. */
+  conversationItems?: FocusedConversationItem[];
   timestamp?: string; // when the content occurred (temporal ranking)
   metadata?: Record<string, string>; // source provenance (returned with recalls)
   /** "append" concatenates `content` onto the stored document instead of replacing it — the whole
@@ -469,7 +472,16 @@ export class HindsightClient {
     if (opts.timestamp) item.timestamp = opts.timestamp;
     if (opts.metadata) item.metadata = opts.metadata;
     if (opts.updateMode) item.update_mode = opts.updateMode;
-    const body: Record<string, unknown> = { items: [item], async: true };
+    const items = opts.conversationItems?.map((focused) => {
+      const { strategy: _strategy, ...shared } = item;
+      return {
+        ...shared,
+        content: JSON.stringify(focused),
+        context: `${context}. ${FOCUSED_CONVERSATION_CONTEXT}`,
+        timestamp: focused.message.timestamp,
+      };
+    }) ?? [item];
+    const body: Record<string, unknown> = { items, async: true };
     if (opts.operationId) body.operation_id = opts.operationId;
     const r = await this.req("POST", this.bankUrl("/memories"), body);
     try {
