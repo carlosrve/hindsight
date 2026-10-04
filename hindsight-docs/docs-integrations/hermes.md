@@ -392,3 +392,17 @@ cat ~/.hindsight/profiles/<profile>.log    # daemon runtime
 
 **Recall returns nothing** — memories need at least one retain cycle, and extraction is an LLM call.
 Store a fact, then ask about it on a later turn.
+
+### Automatic retain delivery
+
+Automatic capture retains immutable completed messages as separate documents under
+`<session-document>:message:<digest>`, with stable IDs derived from source role, text
+and timestamp. Session tags and metadata preserve lineage. Both synchronous and
+default asynchronous batches use distinct item document IDs, rather than appending
+messages with different clocks to one document. A changed message becomes a new
+event; this feature does not delete older documents or migrate existing memories.
+Missing timestamps still use the frozen enqueue clock, not a guessed historical date.
+Dated context accompanies short replies inside memory-defense-screened content;
+relative dates follow conversational intent, including an overnight workday, rather
+than a mandatory midnight rollover. Each message is an extraction unit, so this
+trades more extraction work for accurate temporal provenance.
