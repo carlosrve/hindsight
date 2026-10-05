@@ -3,6 +3,7 @@
  * backfill (ingest past sessions) and the live runtime write-back. A leading `system` turn carries
  * the REF-ID tracer; every turn gets an ABSOLUTE timestamp.
  */
+import { focusedConversationItems, type FocusedConversationItem } from "./focused-conversation";
 import { RateLimitedError, type HindsightClient } from "./hindsight";
 import {
   advancePaths,
@@ -234,6 +235,7 @@ export async function retainLiveSession(
   startTs: string,
   harness?: string,
   opts: {
+    messageClocks?: boolean;
     cursors?: RetainCursorStore;
     stamp?: RetainStamp;
     retryUntil?: number;
@@ -252,7 +254,8 @@ export async function retainLiveSession(
       opts.stamp,
       undefined,
       opts.retryUntil,
-      opts.transcriptPath
+      opts.transcriptPath,
+      opts.messageClocks
     );
   // Serialised so the plan is made against the previous write-back's CONFIRMED cursor (see above).
   return serialize(cursors, sessionId, () =>
@@ -265,7 +268,8 @@ export async function retainLiveSession(
       opts.stamp,
       cursors,
       opts.retryUntil,
-      opts.transcriptPath
+      opts.transcriptPath,
+      opts.messageClocks
     )
   );
 }
@@ -280,7 +284,8 @@ async function writeSession(
   cursors?: RetainCursorStore,
   /** Absolute time this write-back may keep retrying until; the caller owns its own clock. */
   retryUntil = Date.now() + DEFAULT_RETRY_WINDOW_MS,
-  transcriptPath?: string
+  transcriptPath?: string,
+  messageClocks = false
 ): Promise<void> {
   if (!turns.length) return;
   const refId = `conversation:${sessionId}`;
@@ -312,9 +317,18 @@ async function writeSession(
 
   /** Identity of ONE payload: a resubmission of the same bytes is collapsed server-side into the
    *  original operation instead of extracting (or appending) twice. */
-  const opId = (mode: string, content: string) =>
-    uuidV5(`${client.bank}\n${refId}\n${mode}\n${content}`);
-  const submit = (content: string, operationId: string, append: boolean) =>
+  const opId = (mode: string, content: string, items?: FocusedConversationItem[]) =>
+    uuidV5(
+      items
+        ? `${client.bank}\n${refId}\n${mode}:message-clock-v2\n${content}\n${JSON.stringify(items)}`
+        : `${client.bank}\n${refId}\n${mode}\n${content}`
+    );
+  const submit = (
+    content: string,
+    operationId: string,
+    append: boolean,
+    items?: FocusedConversationItem[]
+  ) =>
     client.retain(
       content,
       // Configured context wins. Extraction reads this to decide whose claim a sentence is, so the
@@ -333,6 +347,7 @@ async function writeSession(
       ],
       "conversation",
       {
+        conversationItems: items,
         timestamp: startTs,
         updateMode: append ? "append" : undefined,
         operationId,
@@ -364,12 +379,13 @@ async function writeSession(
 
   if (plan.mode === "replace") {
     const content = renderSessionJsonl(refId, turns, startTs);
+    const items = messageClocks ? focusedConversationItems(turns, startTs) : undefined;
     // Nothing to buffer: replace is idempotent by construction, so a later one re-establishes the
     // same truth from the same transcript. Claim the position unconfirmed so an outcome we never
     // learn resolves to another replace rather than an append onto an unknown state.
     cursors?.write(sessionId, { ...next, dirty: true });
     await submitWithRetry(
-      () => submit(content, opId("replace", content), false),
+      () => submit(content, opId("replace", content, items), false, items),
       stillOurs,
       retryUntil
     );
@@ -383,7 +399,15 @@ async function writeSession(
       .slice(plan.fromTurn)
       .map((t) => JSON.stringify(t))
       .join("\n");
-    queue.push({ content, operationId: opId("append", content), at: Date.now() });
+    const items = messageClocks
+      ? focusedConversationItems(turns, startTs, plan.fromTurn)
+      : undefined;
+    queue.push({
+      content,
+      operationId: opId("append", content, items),
+      at: Date.now(),
+      ...(items ? { items } : {}),
+    });
   }
 
   // Claim the position BEFORE the request, WITH the bytes: a rejected retain — or a process the
@@ -402,7 +426,7 @@ async function writeSession(
     if (i > 0 && Date.now() + REQUEST_BUDGET_MS > retryUntil) return;
     const entry = queue[i];
     await submitWithRetry(
-      () => submit(entry.content, entry.operationId, true),
+      () => submit(entry.content, entry.operationId, true, entry.items),
       stillOurs,
       retryUntil
     );

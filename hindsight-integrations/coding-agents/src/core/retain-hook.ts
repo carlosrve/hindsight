@@ -157,6 +157,7 @@ export async function buildRetain(args: {
   const t0 = Date.now();
   try {
     await retainLiveSession(client as HindsightClient, sessionId, turns, startTs, harness, {
+      messageClocks: harness === "codex",
       cursors: args.cursors ?? fileCursorStore(harness),
       stamp: args.stamp,
       retryUntil: args.retryUntil,
