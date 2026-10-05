@@ -1494,10 +1494,14 @@ class HindsightMemoryProvider(MemoryProvider):
         items = list({item["document_id"]: item for item in items}.values())
 
         outbox = self._automatic_outbox()
-        outbox.stage(RetainEnvelope(
-            bank_id=bank_id, retain_async=retain_async,
-            items=[RetainItem.model_validate(item) for item in items], track_ops=track_ops,
-        ))
+        outbox.stage(
+            RetainEnvelope(
+                bank_id=bank_id,
+                retain_async=retain_async,
+                items=[RetainItem.model_validate(item) for item in items],
+                track_ops=track_ops,
+            )
+        )
 
         def _job() -> None:
             logger.debug(
