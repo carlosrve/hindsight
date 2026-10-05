@@ -22,7 +22,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider, RecallStatus, spawn_context_thread
 from agent.secret_scope import UnscopedSecretError, get_secret
@@ -31,6 +31,11 @@ from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 from tools.registry import tool_error
 from utils import read_json_or_empty
+
+from .capture import CapturedTurn, capture_turn
+
+if TYPE_CHECKING:
+    from agent.memory_sync_snapshot import CompletedTurnSnapshot
 
 from .embedded import (
     _RETRIABLE_CONNECTION_MARKERS,
@@ -48,6 +53,7 @@ from .embedded import (
     _start_daemon,
     _stop_daemon,
 )
+from .retain_outbox import RetainEnvelope, RetainItem, RetainOutbox
 from .settings import (
     _DEFAULT_API_URL,
     _DEFAULT_IDLE_TIMEOUT,
@@ -382,6 +388,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
     # Each server-side op status poll is a round trip — coarser than the 0.05s queue poll.
     _RETAIN_OP_POLL_INTERVAL_S = 0.5
+    sync_turn_snapshot_version = 1
 
     def backup_paths(self) -> List[str]:
         """Legacy shared config + embedded-mode profile env files live under ~/.hindsight."""
@@ -421,7 +428,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_source = _DEFAULT_RETAIN_SOURCE
         self._retain_user_prefix, self._retain_assistant_prefix = "User", "Assistant"
         self._turn_counter = self._turn_index = 0
-        self._session_turns: list[str] = []  # ALL turns for the session
+        self._session_turns: list[CapturedTurn] = []  # ALL turns for the session
         self._last_retained_turn_count = 0  # append-mode delta watermark
         # Server-side async retain ops still in flight: aretain_batch returns on
         # *acceptance*, not durability, so the prefetch gates on these via
@@ -1014,6 +1021,15 @@ class HindsightMemoryProvider(MemoryProvider):
         self._apply_connection_settings(cfg)
         self._apply_retain_settings(cfg)
         self._apply_recall_settings(cfg)
+        self._retain_outbox = RetainOutbox(
+            get_hermes_home(),
+            mode=self._mode,
+            api_url=self._api_url,
+            bank_id=self._bank_id,
+            auth_identity=self._api_key,
+        )
+        if self._automatic_outbox().pending():
+            self._enqueue_retain(self._deliver_automatic_retains)
 
         client_version = "unknown"
         with contextlib.suppress(Exception):
@@ -1339,16 +1355,6 @@ class HindsightMemoryProvider(MemoryProvider):
 
     # -- retain ------------------------------------------------------------------
 
-    def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
-        now = _event_timestamp()  # one turn -> both messages share the event timestamp
-        return [
-            {"role": role, "content": f"{prefix}: {content}", "timestamp": now}
-            for role, prefix, content in (
-                ("user", self._retain_user_prefix, user_content),
-                ("assistant", self._retain_assistant_prefix, assistant_content),
-            )
-        ]
-
     def _build_metadata(self, *, message_count: int, turn_index: int) -> Dict[str, str]:
         metadata: Dict[str, str] = {
             # UTC write/audit time (event time lives on the item timestamp).
@@ -1385,35 +1391,115 @@ class HindsightMemoryProvider(MemoryProvider):
         item.update({k: v for k, v in (("tags", merged_tags), ("observation_scopes", self._observation_scopes)) if v})
         return item
 
+    def _automatic_outbox(self) -> RetainOutbox:
+        if not hasattr(self, "_retain_outbox"):
+            self._retain_outbox = RetainOutbox(
+                get_hermes_home(),
+                mode=self._mode,
+                api_url=self._api_url,
+                bank_id=self._bank_id,
+                auth_identity=self._api_key,
+            )
+        return self._retain_outbox
+
+    def _deliver_automatic_retains(self, outbox: RetainOutbox | None = None) -> None:
+        def send(envelope: RetainEnvelope) -> None:
+            response = self._retain_items(
+                [item.model_dump(mode="json", exclude_none=True) for item in envelope.items],
+                bank_id=envelope.bank_id,
+                document_id=envelope.document_id,
+                retain_async=envelope.retain_async,
+                operation_id=envelope.operation_id,
+            )
+            if envelope.retain_async and envelope.track_ops:
+                self._track_retain_ops(response, envelope.bank_id)
+
+        current = self._automatic_outbox()
+        if outbox is not None and outbox.path != current.path:
+            raise RuntimeError(
+                "Pending automatic retain belongs to a different endpoint/bank; kept for its original scope"
+            )
+        (outbox or current).drain(send)
+
     def _retain_batch(
         self, item: dict, *, bank_id: str, document_id: str | None = None, retain_async: bool | None = None
-    ):
-        """Dispatch one item via aretain_batch (bank_id/document_id/retain_async are
-        call-level args, never item keys)."""
+    ) -> Any:
+        return self._retain_items([item], bank_id=bank_id, document_id=document_id, retain_async=retain_async)
+
+    def _retain_items(
+        self,
+        items: List[Dict[str, Any]],
+        *,
+        bank_id: str,
+        document_id: str | None = None,
+        retain_async: bool | None = None,
+        operation_id: str | None = None,
+    ) -> Any:
+        """Keep the same frozen SDK item list and operation identity on replay."""
         kwargs: Dict[str, Any] = {
             "bank_id": bank_id,
-            "items": [item],
+            "items": items,
             "document_id": document_id,
             "retain_async": retain_async,
+            "operation_id": operation_id,
         }
         kwargs = {k: v for k, v in kwargs.items() if v is not None}
         return self._run_hindsight_operation(lambda client: client.aretain_batch(**kwargs))
 
     def _make_turn_retain_job(
-        self, turns: list[str], *, document_id: str, update_mode: str | None, label: str, track_ops: bool = True
+        self,
+        turns: list[CapturedTurn],
+        *,
+        document_id: str,
+        update_mode: str | None,
+        label: str,
+        track_ops: bool = True,
     ) -> Callable[[], None]:
-        """Writer job shipping *turns* as one document. Inputs are snapshotted NOW: the
+        """Writer job shipping *turns* as dated message documents. Inputs are snapshotted NOW: the
         writer runs after later sync_turn() calls mutate _session_turns/_turn_index/_session_id."""
-        content = "[" + ",".join(turns) + "]"
         metadata = self._build_metadata(message_count=len(turns) * 2, turn_index=self._turn_index)
+        metadata["session_document_id"] = document_id
         lineage = (("session", self._session_id), ("parent", self._parent_session_id))
         tags = [f"{kind}:{sid}" for kind, sid in lineage if sid] or None
         bank_id, retain_async, retain_context = self._bank_id, self._retain_async, self._retain_context
 
-        def _job() -> None:
-            item = self._build_retain_kwargs(
-                content, context=retain_context, metadata=metadata, tags=tags, update_mode=update_mode
+        # Async batches reject repeated document IDs. Separate immutable message
+        # documents also prevent append's original document clock dating a later
+        # message. Session metadata/tags preserve lineage; freeze IDs and bytes now.
+        items = [
+            dict(
+                self._build_retain_kwargs(
+                    turn.focused_content(message),
+                    context=(
+                        f"{retain_context}. Content has a target message and context_messages. "
+                        "Extract only what the target message asserts or proposes. Context_messages are background "
+                        "used to resolve subjects and references, not independent memories to extract. "
+                        "The item timestamp is the target message's source clock. Resolve relative dates using "
+                        "the dated dialogue and its workday context; do not impose a civil-midnight rollover. "
+                        "If intent is ambiguous, preserve that uncertainty rather than inventing a date. "
+                        "Do not promote a proposal into an execution or a user preference."
+                    ),
+                    metadata=metadata,
+                    tags=tags,
+                    occurred_at=message.timestamp,
+                ),
+                document_id=turn.message_document_id(document_id, message),
             )
+            for turn in turns
+            for message in turn.messages
+        ]
+
+        # A copied snapshot may repeat the same immutable event. Submit its
+        # latest dated context once, rather than failing the entire async batch.
+        items = list({item["document_id"]: item for item in items}.values())
+
+        outbox = self._automatic_outbox()
+        outbox.stage(RetainEnvelope(
+            bank_id=bank_id, retain_async=retain_async,
+            items=[RetainItem.model_validate(item) for item in items], track_ops=track_ops,
+        ))
+
+        def _job() -> None:
             logger.debug(
                 "Hindsight %s: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
                 label,
@@ -1421,19 +1507,22 @@ class HindsightMemoryProvider(MemoryProvider):
                 document_id,
                 update_mode,
                 retain_async,
-                len(content),
+                sum(len(item["content"]) for item in items),
                 len(turns),
             )
-            resp = self._retain_batch(item, bank_id=bank_id, document_id=document_id, retain_async=retain_async)
-            # Async retains are only *accepted* here; track the op id(s) so the
-            # next-turn prefetch can wait for true server-side completion.
-            if retain_async and track_ops:
-                self._track_retain_ops(resp, bank_id)
+            self._deliver_automatic_retains(outbox)
             logger.debug("Hindsight %s succeeded", label)
 
         return _job
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        session_id: str = "",
+        messages: CompletedTurnSnapshot | None = None,
+    ) -> None:
         """Enqueue a retain for the current turn (non-blocking; writer thread). Dropped
         once shutdown() fired so post-exit retains never reach aiohttp during teardown."""
         why = (
@@ -1450,7 +1539,14 @@ class HindsightMemoryProvider(MemoryProvider):
             self._session_id = str(session_id).strip()
 
         self._session_turns.append(
-            json.dumps(self._build_turn_messages(user_content, assistant_content), ensure_ascii=False)
+            capture_turn(
+                user_content,
+                assistant_content,
+                snapshot=messages,
+                fallback_timestamp=_event_timestamp(),
+                user_prefix=self._retain_user_prefix,
+                assistant_prefix=self._retain_assistant_prefix,
+            )
         )
         self._turn_counter = self._turn_index = self._turn_counter + 1
         if remainder := self._turn_counter % self._retain_every_n_turns:
@@ -1473,7 +1569,7 @@ class HindsightMemoryProvider(MemoryProvider):
             "sync_turn: retaining %d/%d turns, payload %d chars",
             len(turns_to_retain),
             len(self._session_turns),
-            sum(len(t) for t in turns_to_retain),
+            sum(turn.content_size for turn in turns_to_retain),
         )
 
         job = self._make_turn_retain_job(
@@ -1635,6 +1731,16 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
+        if not self._shutting_down.is_set() and self._session_turns and self._turn_counter % self._retain_every_n_turns:
+            document_id, update_mode = self._resolve_retain_target(self._document_id)
+            start = self._last_retained_turn_count if update_mode == "append" else 0
+            turns = self._session_turns[start:]
+            if turns:
+                self._enqueue_retain(
+                    self._make_turn_retain_job(
+                        turns, document_id=document_id, update_mode=update_mode, label="shutdown retain"
+                    )
+                )
         # Stop accepting retain jobs first so late sync_turn() calls are dropped.
         self._shutting_down.set()
         # The writer finishes in-flight work then exits on the sentinel; the
@@ -1644,7 +1750,7 @@ class HindsightMemoryProvider(MemoryProvider):
             writer.join(timeout=10.0)
             if writer.is_alive():
                 logger.warning(
-                    "Hindsight writer did not stop within 10s; abandoning %d pending retain(s)",
+                    "Hindsight writer did not stop within 10s; staged automatic retains remain in the local outbox (%d queued)",
                     self._retain_queue.qsize(),
                 )
         self._join_prefetch(5.0)
