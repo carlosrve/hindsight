@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pytest
-
 from hindsight_system_tests.payloads import consolidation, extracted, fact
 
 pytestmark = pytest.mark.asyncio
@@ -29,7 +28,9 @@ async def test_lost_async_reply_replays_the_frozen_operation_without_new_facts(c
     llm.on_step("consolidate").returns(consolidation())
     box = module.RetainOutbox(tmp_path, mode="cloud", api_url="test-endpoint", bank_id=bank_id)
     envelope = module.RetainEnvelope(
-        bank_id=bank_id, document_id="conversation-outbox", retain_async=True,
+        bank_id=bank_id,
+        document_id="conversation-outbox",
+        retain_async=True,
         items=[module.RetainItem(content="Ada likes tea", timestamp="2025-05-02T00:00:05Z")],
     )
     box.stage(envelope)
@@ -38,10 +39,16 @@ async def test_lost_async_reply_replays_the_frozen_operation_without_new_facts(c
     def send(packet):
         # The provider's synchronous writer dispatches to its shared client loop.
         # The story does the same with the real SDK on the fixture's event loop.
-        return asyncio.run_coroutine_threadsafe(client.aretain_batch(
-            bank_id=packet.bank_id, items=[item.model_dump(mode="json", exclude_none=True) for item in packet.items],
-            document_id=packet.document_id, retain_async=packet.retain_async, operation_id=packet.operation_id,
-        ), loop).result(timeout=30)
+        return asyncio.run_coroutine_threadsafe(
+            client.aretain_batch(
+                bank_id=packet.bank_id,
+                items=[item.model_dump(mode="json", exclude_none=True) for item in packet.items],
+                document_id=packet.document_id,
+                retain_async=packet.retain_async,
+                operation_id=packet.operation_id,
+            ),
+            loop,
+        ).result(timeout=30)
 
     def lost_reply(packet):
         send(packet)
