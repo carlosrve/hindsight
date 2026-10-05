@@ -3,16 +3,16 @@
 These tests assert the public transport contract, not a rigid interpretation of
 relative dates. The engine remains responsible for interpreting conversational intent.
 """
+
 from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
 
 import pytest
-
-from pydantic import BaseModel, Field
 from hindsight_client_api.exceptions import ApiException
 from hindsight_system_tests.payloads import consolidation, extracted, fact
+from pydantic import BaseModel, Field
 
 pytestmark = pytest.mark.asyncio
 
@@ -41,13 +41,15 @@ class DatedRetainItem(BaseModel):
 
 
 async def test_async_message_documents_preserve_clocks_context_and_replay(client, llm, bank_id, settled):
-    from datetime import datetime
     import uuid
+    from datetime import datetime
 
     llm.on_step("extract_facts", contains='"message": {"role": "user"').returns(
-        extracted(fact("The user requested Boreal maintenance", who="User")))
+        extracted(fact("The user requested Boreal maintenance", who="User"))
+    )
     llm.on_step("extract_facts", contains='"message": {"role": "assistant"').returns(
-        extracted(fact("The agent proposed Boreal maintenance", who="Agent")))
+        extracted(fact("The agent proposed Boreal maintenance", who="Agent"))
+    )
     llm.on_step("consolidate").returns(consolidation())
     question = Message("user", "Propose maintenance for Boreal.", "2025-05-01T23:59:55Z")
     answer = Message("assistant", "Tomorrow at 08 UTC.", "2025-05-02T00:00:05Z")
@@ -69,8 +71,10 @@ async def test_async_message_documents_preserve_clocks_context_and_replay(client
         document = await client.documents.get_document(bank_id, item["document_id"])
         assert item["content"] == document.original_text
     recall = await client.arecall(bank_id=bank_id, query="Boreal maintenance", types=["world", "experience"])
-    clocks = {result.document_id: datetime.fromisoformat(result.mentioned_at.replace("Z", "+00:00"))
-              for result in recall.results}
+    clocks = {
+        result.document_id: datetime.fromisoformat(result.mentioned_at.replace("Z", "+00:00"))
+        for result in recall.results
+    }
     for item in items:
         assert clocks[item["document_id"]] == datetime.fromisoformat(item["timestamp"].replace("Z", "+00:00"))
     before = {result.id for result in recall.results}
@@ -79,10 +83,14 @@ async def test_async_message_documents_preserve_clocks_context_and_replay(client
     replay = await client.arecall(bank_id=bank_id, query="Boreal maintenance", types=["world", "experience"])
     assert {result.id for result in replay.results} == before
     # A later response has its own document and clock; it never appends onto the first message.
-    later = DatedRetainItem(content="Later agent confirmation.", timestamp="2025-05-03T10:00:00Z",
-                           document_id="conversation-clock:message:later").model_dump(mode="json", exclude_none=True)
+    later = DatedRetainItem(
+        content="Later agent confirmation.",
+        timestamp="2025-05-03T10:00:00Z",
+        document_id="conversation-clock:message:later",
+    ).model_dump(mode="json", exclude_none=True)
     llm.on_step("extract_facts", contains="Later agent confirmation").returns(
-        extracted(fact("The agent later confirmed Boreal maintenance", who="Agent")))
+        extracted(fact("The agent later confirmed Boreal maintenance", who="Agent"))
+    )
     await client.aretain_batch(bank_id=bank_id, items=[later], retain_async=True)
     await settled(bank_id)
     document = await client.documents.get_document(bank_id, items[1]["document_id"])
@@ -90,4 +98,5 @@ async def test_async_message_documents_preserve_clocks_context_and_replay(client
     recall = await client.arecall(bank_id=bank_id, query="Boreal maintenance", types=["world", "experience"])
     result = next(result for result in recall.results if result.document_id == later["document_id"])
     assert datetime.fromisoformat(result.mentioned_at.replace("Z", "+00:00")) == datetime.fromisoformat(
-        later["timestamp"].replace("Z", "+00:00"))
+        later["timestamp"].replace("Z", "+00:00")
+    )
