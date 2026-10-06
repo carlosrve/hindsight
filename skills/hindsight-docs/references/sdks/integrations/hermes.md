@@ -408,8 +408,13 @@ or when a new provider starts with the same profile, endpoint, credential identi
 content and operation IDs are frozen. Async replay uses the server's operation
 idempotency; synchronous mode remains at least once. A successful API acceptance
 removes the local record; this is not monitoring of later server-side extraction
-failures. Explicit retain tools are unchanged. Shutdown also stages a partial batch
-below the configured cadence.
+failures. Explicit retain tools are unchanged. Session end, session switch and shutdown
+also stage pending automatic turns below the configured cadence. The session-end
+hook uses only already captured messages, preserving their clocks and original
+scope; it does not re-ingest the host transcript or add tool outputs. Repeated
+end callbacks followed by switch/shutdown do not stage the same unchanged batch
+again. A failed staging attempt leaves its source buffer intact; a failed API
+handoff remains owned by the frozen outbox record.
 
 Outbox records contain raw conversation content until the API's memory defense
 screens it. They live under `$HERMES_HOME/hindsight/retain-outbox/<scope>/` in an

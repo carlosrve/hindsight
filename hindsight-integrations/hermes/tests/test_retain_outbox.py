@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FakeClient
+from conftest import FakeClient, plugin
 from hindsight_hermes.retain_outbox import RetainEnvelope, RetainItem, RetainOutbox
 
 
@@ -138,3 +138,64 @@ def test_missing_operation_identity_is_kept_instead_of_generating_a_new_id(tmp_p
         box.drain(sent.append)
     assert path.exists()
     assert sent == []
+
+
+@pytest.mark.parametrize("ending", ["switch", "shutdown"])
+@pytest.mark.parametrize("append", [True, False])
+def test_session_end_flushes_once_without_ingesting_callback_transcript(provider, monkeypatch, ending, append):
+    instance, client = provider({"retain_every_n_turns": 3}, session_id="original-session")
+    monkeypatch.setattr(plugin, "_check_api_supports_update_mode_append", lambda *a, **k: append)
+    instance.sync_turn("pending question", "pending reply")
+    instance.on_session_end([{"role": "tool", "content": "not automatically captured"}])
+    instance._retain_queue.join()
+    assert len(client.retains) == 1
+    sent = client.retains[0]
+    assert "pending question" in sent["items"][0]["content"]
+    assert "not automatically captured" not in json.dumps(sent)
+    assert instance._session_id == "original-session"
+    instance.on_session_end([])
+    if ending == "switch":
+        instance.on_session_switch("next-session")
+    instance.shutdown()
+    assert client.retains == [sent]
+
+
+def test_session_end_failure_is_recovered_without_a_new_turn(provider):
+    client = FailingClient()
+    instance, _ = provider({"retain_every_n_turns": 3}, client=client)
+    instance.sync_turn("pending question", "pending reply")
+    instance.on_session_end([])
+    instance._retain_queue.join()
+    original = client.attempts[0]
+    assert len(instance._automatic_outbox().pending()) == 1
+    instance.shutdown()
+    assert len(client.attempts) == 1
+    restored, recovered = provider({"retain_every_n_turns": 3})
+    restored._retain_queue.join()
+    assert recovered.retains == [original]
+    assert restored._automatic_outbox().pending() == []
+    restored.shutdown()
+
+
+def test_session_end_staging_failure_preserves_pending_turn(provider, monkeypatch):
+    instance, client = provider({"retain_every_n_turns": 3})
+    instance.sync_turn("pending question", "pending reply")
+    box = instance._automatic_outbox()
+    stage = box.stage
+    monkeypatch.setattr(instance, "_automatic_outbox", lambda: box)
+    monkeypatch.setattr(box, "stage", lambda packet: (_ for _ in ()).throw(OSError("disk unavailable")))
+    with pytest.raises(OSError):
+        instance.on_session_end([])
+    assert len(instance._session_turns) == 1
+    monkeypatch.setattr(box, "stage", stage)
+    instance.on_session_end([])
+    instance._retain_queue.join()
+    assert len(client.retains) == 1
+    instance.shutdown()
+
+
+def test_session_end_never_captures_tools_with_auto_retain_disabled(provider):
+    instance, client = provider({"auto_retain": False})
+    instance.on_session_end([{"role": "user", "content": "uncaptured history"}])
+    instance.shutdown()
+    assert client.retains == []

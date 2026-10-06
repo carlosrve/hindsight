@@ -429,7 +429,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_user_prefix, self._retain_assistant_prefix = "User", "Assistant"
         self._turn_counter = self._turn_index = 0
         self._session_turns: list[CapturedTurn] = []  # ALL turns for the session
-        self._last_retained_turn_count = 0  # append-mode delta watermark
+        self._last_retained_turn_count = 0  # staged boundary watermark; legacy mode keeps the history
         # Server-side async retain ops still in flight: aretain_batch returns on
         # *acceptance*, not durability, so the prefetch gates on these via
         # get_operation_status (a drained local queue is not a read-after-write signal).
@@ -1599,6 +1599,8 @@ class HindsightMemoryProvider(MemoryProvider):
             # retain and must keep every turn.
             self._session_turns.clear()
             self._last_retained_turn_count = 0
+        else:
+            self._last_retained_turn_count = len(self._session_turns)
 
     def _enqueue_retain(self, job: Callable[[], None]) -> None:
         """Hand *job* to the (lazily started) writer and arm the atexit drain."""
@@ -1658,6 +1660,36 @@ class HindsightMemoryProvider(MemoryProvider):
 
     # -- session lifecycle -------------------------------------------------------
 
+    def _flush_pending_turns(self, *, label: str, track_ops: bool = True) -> None:
+        """Stage only a new pending boundary; repeated lifecycle hooks must not append twice."""
+        if not self._auto_retain or self._shutting_down.is_set():
+            return
+        if len(self._session_turns) <= self._last_retained_turn_count:
+            return
+        document_id, update_mode = self._resolve_retain_target(self._document_id)
+        start = self._last_retained_turn_count if update_mode == "append" else 0
+        job = self._make_turn_retain_job(
+            self._session_turns[start:],
+            document_id=document_id,
+            update_mode=update_mode,
+            label=label,
+            track_ops=track_ops,
+        )
+        # _make_turn_retain_job durably stages first. Disk failure leaves the source
+        # intact; network failure after handoff belongs to the frozen outbox record.
+        self._enqueue_retain(job)
+        if update_mode == "append":
+            self._session_turns.clear()
+            self._last_retained_turn_count = 0
+        else:
+            # Keep legacy full-history retention, but do not stage unchanged history
+            # again when session end is followed by a switch or shutdown.
+            self._last_retained_turn_count = len(self._session_turns)
+
+    def on_session_end(self, messages: list[dict[str, Any]]) -> None:
+        """Flush captured automatic turns without recapturing the host transcript."""
+        self._flush_pending_turns(label="session-end retain")
+
     def on_session_switch(
         self, new_session_id: str, *, parent_session_id: str = "", reset: bool = False, **kwargs
     ) -> None:
@@ -1681,28 +1713,8 @@ class HindsightMemoryProvider(MemoryProvider):
         if not new_id:
             return
 
-        # 1. Flush buffered turns under the OLD identifiers, resolved BEFORE the
-        # rotation (legacy: per-process unique; >=0.5.0: session-scoped + append).
-        if self._session_turns:
-            old_document_id, old_update_mode = self._resolve_retain_target(self._document_id)
-            job = self._make_turn_retain_job(
-                list(self._session_turns),
-                document_id=old_document_id,
-                update_mode=old_update_mode,
-                label="flush-on-switch",
-                track_ops=False,
-            )
-
-            def _flush():
-                try:
-                    job()
-                except Exception as e:
-                    logger.warning("Hindsight flush-on-switch failed: %s", e, exc_info=True)
-
-            # Same writer queue as sync_turn: FIFO behind queued old-session retains,
-            # no two threads racing aretain_batch on one document, shutdown drain intact.
-            if not self._shutting_down.is_set():
-                self._enqueue_retain(_flush)
+        # Freeze the old identifiers and persist pending ownership before rotation.
+        self._flush_pending_turns(label="flush-on-switch", track_ops=False)
 
         # 2. Drain the old session's in-flight prefetch and drop its result.
         self._join_prefetch(3.0)
@@ -1735,16 +1747,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
-        if not self._shutting_down.is_set() and self._session_turns and self._turn_counter % self._retain_every_n_turns:
-            document_id, update_mode = self._resolve_retain_target(self._document_id)
-            start = self._last_retained_turn_count if update_mode == "append" else 0
-            turns = self._session_turns[start:]
-            if turns:
-                self._enqueue_retain(
-                    self._make_turn_retain_job(
-                        turns, document_id=document_id, update_mode=update_mode, label="shutdown retain"
-                    )
-                )
+        self._flush_pending_turns(label="shutdown retain")
         # Stop accepting retain jobs first so late sync_turn() calls are dropped.
         self._shutting_down.set()
         # The writer finishes in-flight work then exits on the sentinel; the
