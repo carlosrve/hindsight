@@ -1,0 +1,9 @@
+# Maintained memory fork gate
+
+`memory-fork.yml` validates the composed Hermes/Codex memory patches without live provider credentials or release actions. Its seven jobs retain the corresponding commands from `test.yml`; additionally, the real-host probes run against the reviewed Hermes snapshot-contract SHA. Every selected job runs unconditionally so a workflow-only edit cannot silently skip feature coverage. Pull requests to the memory candidate/integration branches and manual dispatch are supported.
+
+The existing upstream workflow remains unchanged, including its provider tests. This gate is scoped to the memory patches; green does not imply that all upstream API/provider tests pass. It has no deployment capability. Hermes main compatibility and pinned-host snapshot compatibility are distinct checks. Embedded compatibility intentionally leaves the live LLM key empty; structural checks run, while model round-trips remain outside this gate. The blackbox suite uses stub models with real API/Postgres, and does not establish semantic quality with a production model.
+
+Before updating the upstream base, compare these copied job commands to `test.yml` and carry over relevant changes. Update the pinned Hermes SHA only after reviewing and testing its contract. Do not expose production keys to CI. A failure in any selected job blocks readiness; jobs requiring external credentials remain in the separate upstream workflow and must not be described as passed.
+
+Run this workflow on the exact composed candidate SHA before preparing installation pins. Keep feature PRs separate (#1 before #4, #2 before #3); the CI maintenance PR is based on the already tested candidate and must not be mistaken for approval to merge feature PRs. Installation and migration still require review and separate deployment approval.

@@ -1,0 +1,364 @@
+# Fork-only gate for the reviewed memory patch combination. No deployment or live LLM credentials.
+name: Memory fork CI
+
+on:
+  pull_request:
+    branches:
+      - test/memory-fixes-20261005
+      - integration/memory-fixes-20261005
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: memory-fork-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-hermes-snapshot-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || '' }}
+      - name: Checkout reviewed Hermes contract
+        uses: actions/checkout@v6
+        with:
+          repository: carlosrve/hermes-agent
+          ref: d54b7a8d25c6d0a97436266b55ec4d7acde47d9e
+          path: .ci-hermes-contract
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Install isolated Hermes host
+        run: |
+          uv venv "$RUNNER_TEMP/hermes-contract-venv"
+          uv pip install --python "$RUNNER_TEMP/hermes-contract-venv/bin/python" -e .ci-hermes-contract
+      - name: Run real-host snapshot and session-end probes
+        working-directory: hindsight-integrations/hermes
+        env:
+          HERMES_TEST_SOURCE: ${{ github.workspace }}/.ci-hermes-contract
+          HERMES_TEST_PYTHON: ${{ runner.temp }}/hermes-contract-venv/bin/python
+        run: uv run --frozen pytest tests/test_host_snapshot.py -v
+
+  typecheck-api:
+    # `ty check` over hindsight-api-slim. Green today, and it stays green: the rules it enforces
+    # are listed in `[tool.ty.rules]`, with the ones not yet clean marked "ignore" there rather
+    # than silenced here, so this job and a local `uv run ty check` always agree.
+    #
+    # Today that is `invalid-argument-type` -- a call passing the wrong type to a declared
+    # parameter. Python does not enforce annotations and a dataclass does not validate at
+    # construction, so without this such a call runs fine until the value is used, which can be
+    # in another process entirely.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        ref: ${{ github.event.pull_request.head.sha || '' }}
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version-file: ".python-version"
+
+    # Same install as `test-api`, `--all-extras` included, and that is load-bearing rather than
+    # copy-paste: a checker only knows a third-party call's types if the package is installed.
+    # Without the extras, `mlx`, `oracledb` and the parser stack resolve to `Unknown`, every call
+    # into them becomes unverifiable, and the rule passes by knowing nothing -- which looks
+    # identical to passing by being correct.
+    - name: Install dependencies
+      working-directory: ./hindsight-api-slim
+      run: uv sync --frozen --all-extras --index-strategy unsafe-best-match
+
+    - name: ty check
+      working-directory: ./hindsight-api-slim
+      run: uv run ty check
+
+
+  test-coding-agents:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        ref: ${{ github.event.pull_request.head.sha || '' }}
+
+    - uses: actions/setup-node@v6
+      with:
+        node-version: '22'
+        cache: npm
+        cache-dependency-path: hindsight-integrations/coding-agents/package-lock.json
+
+    - name: Install dependencies
+      working-directory: ./hindsight-integrations/coding-agents
+      run: npm ci
+
+    - name: Typecheck
+      working-directory: ./hindsight-integrations/coding-agents
+      run: npx tsc --noEmit
+
+    - name: Unit tests
+      working-directory: ./hindsight-integrations/coding-agents
+      run: npm test
+
+    - name: Build
+      working-directory: ./hindsight-integrations/coding-agents
+      run: npm run build
+
+
+  build-docs:
+    # Keep the production docs build as an unconditional PR check. OpenAPI
+    # generation used to build the site again inside verify-generated-files;
+    # running the existing job for every PR preserves that coverage without
+    # serializing two full Docusaurus builds in the generated-files check.
+    # The one exception is a PR that touches only hindsight-system-tests/,
+    # which the docs site cannot read from — see the filter of the same name.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        ref: ${{ github.event.pull_request.head.sha || '' }}
+        fetch-depth: 0 # fetch tags so check-released-integrations can see them
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: package-lock.json
+
+    # Fail fast before the (slow) build: every integrations.json entry must have a
+    # doc page, and every released integration tag must be in integrations.json.
+    # Needs no npm install (pure Node) and uses the tags fetched above.
+    - name: Check integrations (single source of truth)
+      run: node hindsight-docs/scripts/check-integrations.mjs
+
+    - name: Install dependencies
+      run: npm ci --workspace=hindsight-docs
+
+    # Include the unreleased docs/ tree too: without it CI only builds the released
+    # snapshots, and a broken page under docs/ would surface only at release time.
+    - name: Build docs
+      run: npm run build --workspace=hindsight-docs
+      env:
+        INCLUDE_CURRENT_VERSION: 'true'
+
+
+  test-system:
+    # Deliberately NOT gated on `has_secrets`. The whole suite runs against a stub
+    # that implements the OpenAI chat-completions/embeddings APIs and a
+    # Cohere-compatible rerank endpoint, so it needs no provider credentials — and
+    # therefore runs on fork PRs, which skip every secret-gated test-api job.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    name: test-system (blackbox)
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        ref: ${{ github.event.pull_request.head.sha || '' }}
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true
+        prune-cache: false
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version-file: ".python-version"
+
+    - name: Install API dependencies
+      working-directory: ./hindsight-api-slim
+      # `embedded-db` (pg0) is the only extra needed: with embeddings and
+      # reranking both pointed at the stub, nothing loads sentence-transformers,
+      # so this job skips torch and the HuggingFace model cache entirely.
+      run: uv sync --frozen --extra embedded-db --index-strategy unsafe-best-match
+
+    - name: Install system-test dependencies
+      working-directory: ./hindsight-system-tests
+      run: uv sync --frozen
+
+    - name: Run system tests
+      working-directory: ./hindsight-system-tests
+      run: uv run pytest tests -v
+
+
+  test-hermes-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        ref: ${{ github.event.pull_request.head.sha || '' }}
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true
+        prune-cache: false
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version-file: ".python-version"
+
+    - name: Install dependencies
+      working-directory: ./hindsight-integrations/hermes
+      run: uv sync --frozen
+
+    - name: Run tests
+      working-directory: ./hindsight-integrations/hermes
+      run: uv run pytest tests -v
+
+
+  test-hermes-compat:
+    runs-on: ubuntu-latest
+    # 45 before the provider step was added; it stops the daemon and boots it
+    # again through the plugin's own path, then waits on an LLM extraction.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        ref: ${{ github.event.pull_request.head.sha || '' }}
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true
+        prune-cache: false
+
+    # hindsight-all pulls the local-ml extra, so the embedded daemon can load
+    # sentence-transformers models. Cache them like the test-embed job does.
+    - name: Cache HuggingFace models
+      uses: actions/cache@v5
+      with:
+        path: ~/.cache/huggingface
+        key: ${{ runner.os }}-huggingface-hermes-compat-${{ hashFiles('hindsight-api-slim/pyproject.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-huggingface-hermes-compat-
+          ${{ runner.os }}-huggingface-
+
+    - name: Run Hermes compatibility test
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        # Empty on fork PRs, where secrets are unavailable; the script then runs
+        # every structural check and skips only the LLM-backed round-trips.
+        HERMES_COMPAT_LLM_API_KEY: ""
+      run: ./scripts/test-hermes-compat.sh
+
+    - name: Collect embedded daemon logs on failure
+      if: failure()
+      run: |
+        for f in ~/.hindsight/profiles/hermes-ci*.log ~/.hindsight/profiles/hermes-ci*.stderr.log; do
+          if [ -f "$f" ]; then
+            echo "=== $f ==="
+            cat "$f"
+          fi
+        done || true
+
+
+  verify-generated-files:
+    # Unconditional for every change except one confined to
+    # hindsight-system-tests/ — no generated file in the repo is produced from
+    # that package, so it cannot drift them. See the outside-system-tests filter.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      UV_FROZEN: "1"
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        ref: ${{ github.event.pull_request.head.sha || '' }}
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version-file: ".python-version"
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: package-lock.json
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-gen-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install Node dependencies
+      run: npm ci
+
+    - name: Install Python dependencies
+      run: |
+        cd hindsight-dev && uv sync --frozen --index-strategy unsafe-best-match
+        cd ../hindsight-api && uv sync --frozen --index-strategy unsafe-best-match
+        cd ../hindsight-embed && uv sync --frozen --index-strategy unsafe-best-match
+
+    - name: Run generate-openapi
+      working-directory: hindsight-dev
+      run: uv run generate-openapi
+
+    - name: Run generate-bank-template-schema
+      run: ./scripts/generate-bank-template-schema.sh
+
+    - name: Run generate-clients
+      run: ./scripts/generate-clients.sh
+
+    - name: Run generate-docs-skill
+      run: ./scripts/generate-docs-skill.sh
+
+    - name: Run lint
+      run: ./scripts/hooks/lint.sh
+
+    - name: Verify no uncommitted changes
+      run: |
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "❌ Error: Generated files are out of sync with committed files."
+          echo ""
+          echo "The following files have changed after running generation scripts:"
+          git status --porcelain
+          echo ""
+          echo "Please run the following commands locally and commit the changes:"
+          echo "  ./scripts/generate-openapi.sh"
+          echo "  ./scripts/generate-bank-template-schema.sh"
+          echo "  ./scripts/generate-clients.sh"
+          echo "  ./scripts/generate-docs-skill.sh"
+          echo "  ./scripts/hooks/lint.sh"
+          echo ""
+          git diff --stat
+          exit 1
+        fi
+        echo "✓ All generated files are up to date"
+
