@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "upstream_base": "b32e992b480064b2bb878fd8ba9e67e4de3fcd74",
+  "integration_branch": "integration/memory-20261006",
+  "release_tag": null,
+  "hermes_contract": {
+    "repository": "carlosrve/hermes-agent",
+    "commit": "d54b7a8d25c6d0a97436266b55ec4d7acde47d9e",
+    "upstream_pr": 113400
+  },
+  "maintenance_pr": 5,
+  "patches": [
+    {
+      "id": "hermes-event-clocks",
+      "status": "active",
+      "fork_pr": 1,
+      "branch": "fix/hermes-snapshot-event-times",
+      "reviewed_source_head": "f7092ec06adfea3271c7a2350ebee65e7e311382",
+      "integration_commit": null,
+      "upstream_issue": "https://github.com/vectorize-io/hindsight/issues/5189",
+      "depends_on": [],
+      "regression_paths": [
+        "hindsight-integrations/hermes/tests/test_host_snapshot.py",
+        "hindsight-system-tests/tests/test_98_hermes_message_clocks.py"
+      ],
+      "retire_when": "Upstream adapter preserves original captured user/assistant clocks through the reviewed Hermes host contract."
+    },
+    {
+      "id": "nonempty-bank-retrieval",
+      "status": "active",
+      "fork_pr": 2,
+      "branch": "fix/nonempty-bank-first-retrieval",
+      "reviewed_source_head": "0f6cb8ff24bc79b52aedced9836d3a09d245ed41",
+      "integration_commit": null,
+      "upstream_issue": "https://github.com/vectorize-io/hindsight/issues/5209",
+      "depends_on": [],
+      "regression_paths": [
+        "hindsight-integrations/coding-agents"
+      ],
+      "retire_when": "Nonempty banks with no pages reach memory retrieval without synthetic or empty-bank pollution."
+    },
+    {
+      "id": "codex-message-clocks",
+      "status": "active",
+      "fork_pr": 3,
+      "branch": "fork/codex-message-extraction-clocks",
+      "reviewed_source_head": "cc18b7c20e72fe4f972cf0b1ea5525a7d5bb6c98",
+      "integration_commit": null,
+      "upstream_issue": "https://github.com/vectorize-io/hindsight/issues/5210",
+      "depends_on": [
+        "nonempty-bank-retrieval"
+      ],
+      "regression_paths": [
+        "hindsight-integrations/coding-agents",
+        "hindsight-system-tests/tests/test_97_dated_conversation_items.py"
+      ],
+      "retire_when": "Original per-message clocks and distinct immutable async document IDs survive replay; relative dates remain contextual."
+    },
+    {
+      "id": "hermes-durable-outbox",
+      "status": "active",
+      "fork_pr": 4,
+      "branch": "fork/hermes-retain-outbox",
+      "reviewed_source_head": "4d191e0f65b71a501bec6a313e1895e5e76f27ad",
+      "integration_commit": null,
+      "upstream_issue": "https://github.com/vectorize-io/hindsight/issues/5218",
+      "depends_on": [
+        "hermes-event-clocks"
+      ],
+      "regression_paths": [
+        "hindsight-integrations/hermes/tests/test_retain_outbox.py",
+        "hindsight-integrations/hermes/tests/test_host_snapshot.py",
+        "hindsight-system-tests/tests/test_99_hermes_retain_outbox.py"
+      ],
+      "retire_when": "Captured pending content survives disk/network failures and startup recovery, with session-end/switch/shutdown duplicate prevention and frozen scope."
+    }
+  ]
+}

@@ -4,8 +4,8 @@ name: Memory fork CI
 on:
   pull_request:
     branches:
-      - test/memory-fixes-20261005
-      - integration/memory-fixes-20261005
+      - 'test/**'
+      - 'integration/**'
   workflow_dispatch:
 
 permissions:
@@ -31,11 +31,16 @@ jobs:
           path: .ci-hermes-contract
       - uses: astral-sh/setup-uv@v7
       - uses: actions/setup-python@v6
+        id: host-python
         with:
           python-version: '3.14'
       - name: Install isolated Hermes host
+        env:
+          HERMES_HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
         run: |
-          uv venv "$RUNNER_TEMP/hermes-contract-venv"
+          # Hindsight pins 3.11 in .python-version; uv otherwise chooses that over setup-python.
+          # Hermes runtime dependencies are conditional on >=3.14, so select explicitly.
+          uv venv --python "$HERMES_HOST_PYTHON" "$RUNNER_TEMP/hermes-contract-venv"
           uv pip install --python "$RUNNER_TEMP/hermes-contract-venv/bin/python" -e .ci-hermes-contract
       - name: Run real-host snapshot and session-end probes
         working-directory: hindsight-integrations/hermes
