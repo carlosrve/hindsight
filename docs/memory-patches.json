@@ -44,8 +44,8 @@
       "status": "active",
       "fork_pr": 3,
       "branch": "fork/codex-message-extraction-clocks",
-      "reviewed_source_head": "c38185da85d8c036ff41fc41fb47b6380eed1595",
-      "integration_commit": null,
+      "reviewed_source_head": "79da347ff8d13dbe1ea0c90675807c03f429b987",
+      "integration_commit": "e05239236e2191fd4760ebef5dc627cc5da9daaa",
       "upstream_issue": "https://github.com/vectorize-io/hindsight/issues/5210",
       "depends_on": [
         "nonempty-bank-retrieval"
@@ -61,8 +61,8 @@
       "status": "active",
       "fork_pr": 4,
       "branch": "fork/hermes-retain-outbox",
-      "reviewed_source_head": "6725e6cd1070d049aca80fb007450e0809957c90",
-      "integration_commit": null,
+      "reviewed_source_head": "92e4fb6524905ec76de5fdffd3e00358c087706d",
+      "integration_commit": "4632081aa4456fab870456478571d4faf2ab3077",
       "upstream_issue": "https://github.com/vectorize-io/hindsight/issues/5218",
       "depends_on": [
         "hermes-event-clocks"
@@ -74,5 +74,13 @@
       ],
       "retire_when": "Captured pending content survives disk/network failures and startup recovery, with session-end/switch/shutdown duplicate prevention and frozen scope."
     }
-  ]
+  ],
+  "maintenance_commit": "96b21a623c2960b3ba98f31118d8ee35d28986a5",
+  "validated_feature_runs": {
+    "1": 37342462040,
+    "2": 37342466477,
+    "3": 37581012554,
+    "4": 37581020600,
+    "5": 37580203016
+  }
 }
