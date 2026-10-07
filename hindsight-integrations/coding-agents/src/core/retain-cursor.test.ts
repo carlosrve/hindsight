@@ -68,6 +68,29 @@ describe("planRetain", () => {
     });
   });
 
+  it("bounds buffered dated dialogue context, not just the original transcript bytes", () => {
+    const all = turns(5);
+    const big = {
+      ...pendingAt(Date.now()),
+      items: [
+        {
+          documentKey: "test-message",
+          message: { role: "assistant", content: "short", timestamp: "2025-01-01T00:00:00Z" },
+          context_messages: [
+            {
+              role: "user",
+              content: "x".repeat(PENDING_MAX_BYTES),
+              timestamp: "2025-01-01T00:00:00Z",
+            },
+          ],
+        },
+      ],
+    };
+    expect(planRetain(all, { ...cursorFor(all, 3), pending: [big] }, SUPPORTED)).toEqual({
+      mode: "replace",
+    });
+  });
+
   it("replaces when the transcript was rewritten rather than extended", () => {
     // Compaction: same turn count, different content. Appending would splice two conversations.
     const original = turns(5);
