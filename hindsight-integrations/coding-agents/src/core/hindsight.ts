@@ -522,6 +522,18 @@ export class HindsightClient {
     }
   }
 
+  /** A bounded existence probe, independent of pages, git tags and stored document text. */
+  async hasMemories(): Promise<boolean> {
+    const r = await this.req("GET", this.bankUrl("/memories/list?limit=1"), undefined, [], 5_000);
+    if (r.status === 404) {
+      if (await isEndpointMissing(r)) throw new Error("Memory readiness endpoint is unavailable");
+      return false; // the bank does not exist yet
+    }
+    const body = (await r.json()) as { items?: unknown };
+    if (!Array.isArray(body.items)) throw new Error("Memory readiness response has no items array");
+    return body.items.length > 0;
+  }
+
   /**
    * Every document_id currently in the bank under a strategy tag (e.g. `source:git`), paginated into a
    * Set. Powers the incremental git-sync's "what's already ingested?" check — since git commits are stored

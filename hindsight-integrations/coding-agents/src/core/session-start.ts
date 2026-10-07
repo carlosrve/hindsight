@@ -37,7 +37,12 @@ import type { ClientOpts, RetainOpts } from "./hindsight";
 import { buildRetainStamp } from "./retain-stamp";
 import { detectLegacyClaudePlugin, legacyClaudePluginWarning } from "./legacy";
 import { HindsightClient } from "./hindsight";
-import { sessionCacheFile, sessionRootDir, writeSessionCache } from "./session-cache";
+import {
+  sessionCacheFile,
+  sessionRootDir,
+  readSessionCache,
+  writeSessionCache,
+} from "./session-cache";
 
 /** Minimal client shape `buildSessionStartContext` needs. */
 interface SeedContextClient {
@@ -46,6 +51,7 @@ interface SeedContextClient {
   // (gitLogIsCurrent). The minimal test clients omit it and keep the exact-HEAD check.
   documentTags?(documentId: string): Promise<string[] | undefined>;
   listPages(): Promise<unknown>;
+  hasMemories?(): Promise<boolean>;
   knowledgePagesSupported?: boolean;
   // Optional: used to write the survey-baseline marker (Option A). HindsightClient has it; the
   // minimal test clients omit it, and the baseline write guards on its presence.
@@ -303,8 +309,7 @@ export async function buildSessionStartContext(args: {
     }
   }
 
-  // An actual empty roster, like a cold git-doc result, means this bank has no useful material to
-  // synthesize yet. A failed roster request is NOT evidence of that, so keep the two cases apart.
+  // List pages for the knowledge preamble; an empty roster is not an empty memory bank.
   let pages: PageRef[] = [];
   let pageListKnown = false;
   try {
@@ -320,7 +325,16 @@ export async function buildSessionStartContext(args: {
     reflectOnNewGoals: cfg.autoInject !== "reflect",
     extra: cfg.toolGuideExtra,
   });
-  const deferInitialReflect = cold === true || (pageListKnown && pages.length === 0);
+  // An empty page roster (or no git documents) says nothing about conversation memory.
+  // Probe only when there are no pages; failure is unknown, so keep retrieval eligible.
+  let deferInitialReflect = false;
+  if (pageListKnown && pages.length === 0 && client.hasMemories) {
+    try {
+      deferInitialReflect = !(await client.hasMemories());
+    } catch {
+      /* Never suppress retrieval because a separate readiness probe failed. */
+    }
+  }
 
   // The banner shows on EVERY session — Hindsight's presence is part of the product, not a
   // one-time setup note. Wording tracks the bank state: cold = "learning", else "remembering";
@@ -417,8 +431,14 @@ export async function runSessionStartHook(
     // user-facing message as the legacy-plugin warning — the banner is the only visible channel.
     if (mcpHint)
       out.systemMessage = out.systemMessage ? `${out.systemMessage}\n${mcpHint}` : mcpHint;
-    if (out.deferInitialReflect && sessionId) {
-      writeSessionCache(sessionCacheFile(harness, sessionId), { deferInitialReflect: true });
+    if (sessionId) {
+      const file = sessionCacheFile(harness, sessionId);
+      // A resume must clear an old empty-bank deferral once memory arrives, without losing
+      // a reflection already resolved for this session or the roster cached by the prompt hook.
+      writeSessionCache(file, {
+        ...readSessionCache(file),
+        deferInitialReflect: out.deferInitialReflect === true,
+      });
     }
     // The lifecycle computes one host-neutral output; the registry owns each host's wire schema.
     const payload = spec.emit(out);

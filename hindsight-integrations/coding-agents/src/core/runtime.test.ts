@@ -19,6 +19,7 @@ describe("RuntimeCore", () => {
     const client = {
       listDocumentIds: vi.fn(async () => new Set(["git:existing"])),
       listPages: vi.fn(async () => ({ items: [] })),
+      hasMemories: vi.fn(async () => false),
       reflect: vi.fn(async () => "shared reflect"),
     } as unknown as HindsightClient;
     const runtime = new RuntimeCore(client, "bank-1", resolveConfig({}));

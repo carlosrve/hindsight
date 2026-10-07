@@ -65,6 +65,11 @@ npx @vectorize-io/hindsight-coding-agents install claude-code
 
 #### <img src="/img/harness/codex.svg" alt="" width="20" height="20" /> Codex CLI
 
+A bank can contain useful conversation memory before it has knowledge pages or git documents.
+SessionStart defers first-prompt injection only when a bounded memory probe confirms the bank
+is empty. If the probe fails, retrieval remains eligible; an empty page roster alone does not
+suppress Reflect or Recall.
+
 ```bash
 npx @vectorize-io/hindsight-coding-agents install codex
 ```

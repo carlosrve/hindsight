@@ -1,3 +1,4 @@
+import { readSessionCache, sessionCacheFile, writeSessionCache } from "./session-cache";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -93,7 +94,7 @@ describe("buildSessionStartContext", () => {
     // contains a "🧠 From Hindsight memory" attribution example, so match on banner text.)
     expect(out.additionalContext).not.toContain("memory bank");
     expect(out.additionalContext).not.toContain("is learning this repo");
-    expect(out.deferInitialReflect).toBe(true);
+    expect(out.deferInitialReflect).toBe(false);
   });
 
   it("threads the ASKING harness to the background seed (not the config loader's default) — #3247", async () => {
@@ -159,7 +160,7 @@ describe("buildSessionStartContext", () => {
     expect(out.deferInitialReflect).toBe(false);
   });
 
-  it("an empty but reachable page roster defers first reflect even when git documents already exist", async () => {
+  it("an empty page roster does not suppress retrieval when git documents already exist", async () => {
     const out = await buildSessionStartContext({
       cwd: "/repo/dir",
       bankId: "bank-1",
@@ -171,7 +172,48 @@ describe("buildSessionStartContext", () => {
       hasGit: () => true,
       startSeed: vi.fn(),
     });
-    expect(out.deferInitialReflect).toBe(true);
+    expect(out.deferInitialReflect).toBe(false);
+  });
+
+  it.each([
+    { memories: true, expected: false },
+    { memories: false, expected: true },
+    { memories: undefined, expected: false },
+  ])("defers only a confirmed-empty memory bank: $memories", async ({ memories, expected }) => {
+    const hasMemories = vi.fn(async () => {
+      if (memories === undefined) throw new Error("temporary outage");
+      return memories;
+    });
+    const out = await buildSessionStartContext({
+      cwd: "/non-git",
+      bankId: "bank-1",
+      cfg: resolveConfig({ autoSeed: false }),
+      client: {
+        listDocumentIds: async () => new Set<string>(),
+        listPages: async () => ({ items: [] }),
+        hasMemories,
+      },
+      hasGit: () => false,
+    });
+    expect(out.deferInitialReflect).toBe(expected);
+    expect(hasMemories).toHaveBeenCalledOnce();
+  });
+
+  it("does not probe memory existence when knowledge pages are present", async () => {
+    const hasMemories = vi.fn();
+    const out = await buildSessionStartContext({
+      cwd: "/non-git",
+      bankId: "bank-1",
+      cfg: resolveConfig({ autoSeed: false }),
+      client: {
+        listDocumentIds: async () => new Set<string>(),
+        listPages: listPagesOk,
+        hasMemories,
+      },
+      hasGit: () => false,
+    });
+    expect(out.deferInitialReflect).toBe(false);
+    expect(hasMemories).not.toHaveBeenCalled();
   });
 
   // The old "declined state -> no seed" test is gone with the seed-state file itself: the live
@@ -427,6 +469,37 @@ describe("runSessionStartHook host MCP registration", () => {
   afterEach(() => {
     rawConfig = undefined;
     rmSync(repo, { recursive: true, force: true });
+  });
+
+  it("clears stale empty-bank deferral on resume without discarding a resolved reflection", async () => {
+    rawConfig = { autoSeed: false, autoUpdate: false, bankId: "test-bank" };
+    const session = `resume-${repo.split("/").pop()}`;
+    const file = sessionCacheFile("codex", session);
+    writeSessionCache(file, {
+      deferInitialReflect: true,
+      reflectAnswer: "cached source",
+      turns: 2,
+    });
+    stdin = JSON.stringify({ cwd: repo, session_id: session });
+    const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    try {
+      await runSessionStartHook(
+        HOOK_HARNESSES.codex.sessionStart,
+        () =>
+          ({
+            listPages: async () => ({ items: [] }),
+            hasMemories: async () => true,
+          }) as never
+      );
+      expect(readSessionCache(file)).toMatchObject({
+        deferInitialReflect: false,
+        reflectAnswer: "cached source",
+        turns: 2,
+      });
+    } finally {
+      write.mockRestore();
+      rmSync(file, { force: true });
+    }
   });
 
   it("registers for a live repo and shows the hint in the banner", async () => {
