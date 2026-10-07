@@ -16,7 +16,7 @@
       "fork_pr": 1,
       "branch": "fix/hermes-snapshot-event-times",
       "reviewed_source_head": "f7092ec06adfea3271c7a2350ebee65e7e311382",
-      "integration_commit": null,
+      "integration_commit": "7eaa0979927c55fd788571d09235225b69938a08",
       "upstream_issue": "https://github.com/vectorize-io/hindsight/issues/5189",
       "depends_on": [],
       "regression_paths": [
@@ -31,7 +31,7 @@
       "fork_pr": 2,
       "branch": "fix/nonempty-bank-first-retrieval",
       "reviewed_source_head": "0f6cb8ff24bc79b52aedced9836d3a09d245ed41",
-      "integration_commit": null,
+      "integration_commit": "b5851a77979ea970ea5ad0ebe0669189874155c3",
       "upstream_issue": "https://github.com/vectorize-io/hindsight/issues/5209",
       "depends_on": [],
       "regression_paths": [
@@ -44,7 +44,7 @@
       "status": "active",
       "fork_pr": 3,
       "branch": "fork/codex-message-extraction-clocks",
-      "reviewed_source_head": "cc18b7c20e72fe4f972cf0b1ea5525a7d5bb6c98",
+      "reviewed_source_head": "c38185da85d8c036ff41fc41fb47b6380eed1595",
       "integration_commit": null,
       "upstream_issue": "https://github.com/vectorize-io/hindsight/issues/5210",
       "depends_on": [
@@ -61,7 +61,7 @@
       "status": "active",
       "fork_pr": 4,
       "branch": "fork/hermes-retain-outbox",
-      "reviewed_source_head": "4d191e0f65b71a501bec6a313e1895e5e76f27ad",
+      "reviewed_source_head": "6725e6cd1070d049aca80fb007450e0809957c90",
       "integration_commit": null,
       "upstream_issue": "https://github.com/vectorize-io/hindsight/issues/5218",
       "depends_on": [

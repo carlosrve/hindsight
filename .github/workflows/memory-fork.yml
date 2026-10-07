@@ -2,6 +2,8 @@
 name: Memory fork CI
 
 on:
+  push:
+    branches: ['integration/**']
   pull_request:
     branches:
       - 'test/**'
