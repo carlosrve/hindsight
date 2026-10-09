@@ -441,6 +441,8 @@ class HindsightMemoryProvider(MemoryProvider):
         # Recall: pending prefetch block + count, and the indicator state (recall_status()).
         self._prefetch_result, self._prefetch_count = "", 0
         self._prefetch_lock = threading.Lock()
+        self._prefetch_generation = 0
+        self._prefetch_closed = False
         self._prefetch_thread = None
         self._last_recall_returned, self._last_recall_count = False, 0
         self._apply_recall_settings({})
@@ -984,6 +986,9 @@ class HindsightMemoryProvider(MemoryProvider):
     # -- lifecycle ---------------------------------------------------------------
 
     def initialize(self, session_id: str, **kwargs) -> None:
+        self._invalidate_prefetch()
+        with self._prefetch_lock:
+            self._prefetch_closed = False
         self._session_id = str(session_id or "").strip()
         self._parent_session_id = str(kwargs.get("parent_session_id", "") or "").strip()
         # Status channel for the retain indicator (recall reports via recall_status()).
@@ -1335,23 +1340,52 @@ class HindsightMemoryProvider(MemoryProvider):
             return None
         return RecallStatus(provider_label="Hindsight", count=self._last_recall_count, glyph=_HINDSIGHT_GLYPH)
 
+    def _invalidate_prefetch(self, *, close: bool = False) -> None:
+        # A bounded join cannot cancel an old worker. Invalidate its publication
+        # ticket before rotating ownership or closing, even if it finishes later.
+        with self._prefetch_lock:
+            self._prefetch_generation += 1
+            self._prefetch_closed = self._prefetch_closed or close
+            self._prefetch_result, self._prefetch_count = "", 0
+        self._last_recall_returned, self._last_recall_count = False, 0
+
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        # Sync mode recalls live each turn — nothing to prime in the background.
         if self._recall_sync or self._recall_disabled():
             return
+        with self._prefetch_lock:
+            if self._prefetch_closed or self._shutting_down.is_set() or (session_id and session_id != self._session_id):
+                return
+            self._prefetch_generation += 1
+            generation, owner = self._prefetch_generation, self._session_id
+            self._prefetch_result, self._prefetch_count = "", 0
 
-        def _run():
-            # Wait (bounded, off the reply path) for the just-completed turn's
-            # retain to be recall-visible so the warmed context includes it.
+        def current() -> bool:
+            # Only call while holding _prefetch_lock.
+            return (
+                not self._prefetch_closed
+                and not self._shutting_down.is_set()
+                and generation == self._prefetch_generation
+                and owner == self._session_id
+            )
+
+        def run() -> None:
             if self._prefetch_waits_for_retain:
                 self._wait_for_retains_drained(self._prefetch_retain_drain_timeout)
+            with self._prefetch_lock:
+                if not current():
+                    return
             text, count = self._do_recall(query)
-            if text:
-                with self._prefetch_lock:
+            with self._prefetch_lock:
+                if current():
+                    # Empty newer results must also supersede older nonempty ones.
                     self._prefetch_result, self._prefetch_count = text, count
 
-        self._prefetch_thread = spawn_context_thread(_run, name="hindsight-prefetch")
-        self._prefetch_thread.start()
+        worker = spawn_context_thread(run, name="hindsight-prefetch")
+        with self._prefetch_lock:
+            if not current():
+                return
+            self._prefetch_thread = worker
+        worker.start()
 
     # -- retain ------------------------------------------------------------------
 
@@ -1688,6 +1722,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
         """Flush captured automatic turns without recapturing the host transcript."""
+        self._invalidate_prefetch()
         self._flush_pending_turns(label="session-end retain")
 
     def on_session_switch(
@@ -1713,13 +1748,15 @@ class HindsightMemoryProvider(MemoryProvider):
         if not new_id:
             return
 
+        self._invalidate_prefetch()
         # Freeze the old identifiers and persist pending ownership before rotation.
         self._flush_pending_turns(label="flush-on-switch", track_ops=False)
 
         # 2. Drain the old session's in-flight prefetch and drop its result.
         self._join_prefetch(3.0)
         with self._prefetch_lock:
-            self._prefetch_result = ""
+            self._prefetch_generation += 1
+            self._prefetch_result, self._prefetch_count = "", 0
 
         # 3. Rotate to the new session.
         if parent_session_id:
@@ -1747,6 +1784,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
+        self._invalidate_prefetch(close=True)
         self._flush_pending_turns(label="shutdown retain")
         # Stop accepting retain jobs first so late sync_turn() calls are dropped.
         self._shutting_down.set()
