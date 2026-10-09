@@ -53,6 +53,7 @@ from .embedded import (
     _start_daemon,
     _stop_daemon,
 )
+from .memory_context import DEFAULT_MEMORY_CONTEXT_PREAMBLE, frame_memory
 from .retain_outbox import RetainEnvelope, RetainItem, RetainOutbox
 from .settings import (
     _DEFAULT_API_URL,
@@ -1302,12 +1303,8 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.debug("Prefetch: no results available")
             return ""
         logger.debug("Prefetch: returning %d chars of context", len(result))
-        header = self._recall_prompt_preamble or (
-            "# Hindsight Memory (persistent cross-session context)\n"
-            "Use this to answer questions about the user and prior sessions. "
-            "Do not call tools to look up information that is already present here."
-        )
-        return f"{header}\n\n{result}"
+        header = self._recall_prompt_preamble or DEFAULT_MEMORY_CONTEXT_PREAMBLE
+        return f"{header}\n\n{frame_memory(result, count)}"
 
     def _join_prefetch(self, timeout: float, *, log: bool = False) -> None:
         if not (self._prefetch_thread and self._prefetch_thread.is_alive()):
